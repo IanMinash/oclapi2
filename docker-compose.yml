@@ -55,72 +55,42 @@ services:
     restart: "always"
     healthcheck:
       test: ["CMD-SHELL", "-c", "CELERY_WORKER_NAME=default ./ping_celery_worker.sh"]
-    environment:
-      - REDIS_HOST=${REDIS_HOST-redis}
-      - REDIS_PORT=${REDIS_PORT-6379}
-      - DEBUG=${DEBUG-FALSE}
-      - ERRBIT_URL
-      - ERRBIT_KEY
+    env_file: .env
   celery_indexing:
     image: openconceptlab/oclapi2:${ENVIRONMENT-production}
     command: ["bash", "-c", "CELERY_WORKER_NAME=indexing ./start_celery_worker.sh -P prefork -Q indexing -c 2"]
     restart: "always"
     healthcheck:
       test: ["CMD-SHELL", "-c", "CELERY_WORKER_NAME=indexing ./ping_celery_worker.sh"]
-    environment:
-      - REDIS_HOST=${REDIS_HOST-redis}
-      - REDIS_PORT=${REDIS_PORT-6379}
-      - DEBUG=${DEBUG-FALSE}
-      - ERRBIT_URL
-      - ERRBIT_KEY
+    env_file: .env
   celery_concurrent:
     image: openconceptlab/oclapi2:${ENVIRONMENT-production}
     command: ["bash", "-c", "CELERY_WORKER_NAME=concurrent ./start_celery_worker.sh -P prefork -Q concurrent -c 2"]
     restart: "always"
     healthcheck:
       test:  ["CMD-SHELL", "-c", "CELERY_WORKER_NAME=concurrent ./ping_celery_worker.sh"]
-    environment:
-      - REDIS_HOST=${REDIS_HOST-redis}
-      - REDIS_PORT=${REDIS_PORT-6379}
-      - DEBUG=${DEBUG-FALSE}
-      - ERRBIT_URL
-      - ERRBIT_KEY
+    env_file: .env
   celery_bulk_import_0_1:
     image: openconceptlab/oclapi2:${ENVIRONMENT-production}
     command: ["bash", "-c", "CELERY_WORKER_NAME=bulk_import_0_1 ./start_celery_worker.sh -Q bulk_import_0,bulk_import_1 -c 1"]
     restart: "always"
     healthcheck:
       test:  ["CMD-SHELL", "-c", "CELERY_WORKER_NAME=bulk_import_0_1 ./ping_celery_worker.sh"]
-    environment:
-      - REDIS_HOST=${REDIS_HOST-redis}
-      - REDIS_PORT=${REDIS_PORT-6379}
-      - DEBUG=${DEBUG-FALSE}
-      - ERRBIT_URL
-      - ERRBIT_KEY
+    env_file: .env
   celery_bulk_import_2_3:
     image: openconceptlab/oclapi2:${ENVIRONMENT-production}
     command: ["bash", "-c", "CELERY_WORKER_NAME=bulk_import_2_3 ./start_celery_worker.sh -Q bulk_import_2,bulk_import_3 -c 1"]
     restart: "always"
     healthcheck:
       test:  ["CMD-SHELL", "-c", "CELERY_WORKER_NAME=bulk_import_2_3 ./ping_celery_worker.sh"]
-    environment:
-      - REDIS_HOST=${REDIS_HOST-redis}
-      - REDIS_PORT=${REDIS_PORT-6379}
-      - DEBUG=${DEBUG-FALSE}
-      - ERRBIT_URL
-      - ERRBIT_KEY
+    env_file: .env
   celery_bulk_import_root:
     image: openconceptlab/oclapi2:${ENVIRONMENT-production}
     command: ["bash", "-c", "CELERY_WORKER_NAME=bulk_import_root ./start_celery_worker.sh -Q bulk_import_root -c 1"]
     restart: "always"
     healthcheck:
       test:  ["CMD-SHELL", "-c", "CELERY_WORKER_NAME=bulk_import_root ./ping_celery_worker.sh"]
-    environment:
-      - REDIS_HOST=${REDIS_HOST-redis}
-      - REDIS_PORT=${REDIS_PORT-6379}
-      - DEBUG=${DEBUG-FALSE}
-      - ERRBIT_URL
-      - ERRBIT_KEY
+    env_file: .env
   flower:
     image: openconceptlab/oclapi2:${ENVIRONMENT-production}
     command: ["bash", "-c", "./start_flower.sh"]
@@ -128,11 +98,7 @@ services:
       - 5555:5555
     depends_on:
       - redis
-    environment:
-      - FLOWER_USER=${FLOWER_USER-root}
-      - FLOWER_PASSWORD=${FLOWER_PASSWORD-Root123}
-      - REDIS_HOST=${REDIS_HOST-redis}
-      - REDIS_PORT=${REDIS_PORT-6379}
+    env_file: .env
     restart: "always"
     healthcheck:
       test: "curl --silent --fail -u $${FLOWER_USER:-root}:$${FLOWER_PASSWORD:-Root123} http://localhost:5555/metrics || exit 1"
