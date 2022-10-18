@@ -1,3 +1,5 @@
+import json
+
 from django.core.validators import RegexValidator
 from pydash import get
 from rest_framework.fields import CharField, IntegerField, DateTimeField, ChoiceField, JSONField, ListField, \
@@ -94,6 +96,13 @@ class SourceCreateOrUpdateSerializer(ModelSerializer):
                 'autoid_mapping_mnemonic_start_from', 'autoid_mapping_external_id_start_from',
         ]:
             setattr(source, attr, validated_data.get(attr, get(source, attr)))
+        for attr in ['jurisdiction', 'identifier', 'contact', 'meta']:
+            value = validated_data.get(attr, get(source, attr))
+            try:
+                value = json.loads(value) if isinstance(value, str) else value
+            except:  # pylint: disable=bare-except
+                pass
+            setattr(source, attr, value)
 
         source.full_name = validated_data.get('full_name', source.full_name) or source.name
 
@@ -291,6 +300,11 @@ class SourceDetailSerializer(SourceCreateOrUpdateSerializer):
             from core.concepts.serializers import ConceptDetailSerializer
             return ConceptDetailSerializer(obj.hierarchy_root).data
         return None
+
+    def to_representation(self, instance):  # used to be to_native
+        ret = super().to_representation(instance)
+        ret.update({"supported_locales": instance.get_supported_locales()})
+        return ret
 
 
 class SourceVersionDetailSerializer(SourceCreateOrUpdateSerializer):

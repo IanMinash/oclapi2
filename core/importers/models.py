@@ -437,6 +437,23 @@ class ConceptImporter(BaseResourceImporter):
 
         return PERMISSION_DENIED
 
+    def delete(self):
+        is_clean = self.clean()
+        if not is_clean:
+            return is_clean
+        if self.exists():
+            parent = self.data.get('parent')
+            try:
+                if parent.has_edit_access(self.user):
+                    concept = self.get_queryset().first()
+                    concept.retire(self.user)
+                    return DELETED
+                return PERMISSION_DENIED
+            except Exception as ex:
+                return dict(errors=ex.args)
+
+        return NOT_FOUND
+
 
 class MappingImporter(BaseResourceImporter):
     mandatory_fields = {"map_type", "from_concept_url"}
@@ -495,8 +512,7 @@ class MappingImporter(BaseResourceImporter):
 
         if to_source_url:
             to_source_uri = drop_version(to_source_url)
-            if Source.objects.filter(uri=to_source_uri).exists():
-                filters['to_source__uri'] = to_source_uri
+            filters['to_source_url'] = to_source_uri
 
         if to_concept_code:
             filters['to_concept_code'] = to_concept_code if is_url_encoded_string(
@@ -552,6 +568,23 @@ class MappingImporter(BaseResourceImporter):
             return self.instance.errors or FAILED
 
         return PERMISSION_DENIED
+
+    def delete(self):
+        is_clean = self.clean()
+        if not is_clean:
+            return is_clean
+        if self.exists():
+            parent = self.data.get('parent')
+            try:
+                if parent.has_edit_access(self.user):
+                    mapping = self.get_queryset().first()
+                    mapping.retire(self.user)
+                    return DELETED
+                return PERMISSION_DENIED
+            except Exception as ex:
+                return dict(errors=ex.args)
+
+        return NOT_FOUND
 
 
 class ReferenceImporter(BaseResourceImporter):
@@ -667,8 +700,8 @@ class BulkImportInline(BaseImporter):
             print("****STARTED SUBPROCESS****")
             print(f"TASK ID: {self.self_task_id}")
             print("***************")
-        new_concept_ids = {}
-        new_mapping_ids = {}
+        new_concept_ids = set()
+        new_mapping_ids = set()
         for original_item in self.input_list:
             self.processed += 1
             logger.info('Processing %s of %s', str(self.processed), str(self.total))
@@ -708,22 +741,16 @@ class BulkImportInline(BaseImporter):
                 continue
             if item_type == 'concept':
                 concept_importer = ConceptImporter(item, self.user, self.update_if_exists)
-                _result = concept_importer.run()
+                _result = concept_importer.delete() if action == 'delete' else concept_importer.run()
                 if get(concept_importer.instance, 'id'):
-                    parent_url = concept_importer.instance.parent.uri
-                    if parent_url not in new_concept_ids:
-                        new_concept_ids[parent_url] = []
-                    new_concept_ids[parent_url].append(concept_importer.instance.mnemonic)
+                    new_concept_ids.add(concept_importer.instance.versioned_object_id)
                 self.handle_item_import_result(_result, original_item)
                 continue
             if item_type == 'mapping':
                 mapping_importer = MappingImporter(item, self.user, self.update_if_exists)
-                _result = mapping_importer.run()
+                _result = mapping_importer.delete() if action == 'delete' else mapping_importer.run()
                 if get(mapping_importer.instance, 'id'):
-                    parent_url = mapping_importer.instance.parent.uri
-                    if parent_url not in new_mapping_ids:
-                        new_mapping_ids[parent_url] = []
-                    new_mapping_ids[parent_url].append(mapping_importer.instance.mnemonic)
+                    new_mapping_ids.add(mapping_importer.instance.versioned_object_id)
                 self.handle_item_import_result(_result, original_item)
                 continue
             if item_type == 'reference':
@@ -733,15 +760,13 @@ class BulkImportInline(BaseImporter):
                 continue
 
         if new_concept_ids:
-            for parent_url, ids in new_concept_ids.items():
-                for chunk in chunks(ids, 1000):
-                    batch_index_resources.apply_async(
-                        ('concept', dict(mnemonic__in=chunk, parent__uri=parent_url), True), queue='indexing')
+            for chunk in chunks(list(new_concept_ids), 1000):
+                batch_index_resources.apply_async(
+                    ('concept', dict(versioned_object_id__in=chunk), True), queue='indexing')
         if new_mapping_ids:
-            for parent_url, ids in new_mapping_ids.items():
-                for chunk in chunks(ids, 1000):
-                    batch_index_resources.apply_async(
-                        ('mapping', dict(mnemonic__in=chunk, parent__uri=parent_url), True), queue='indexing')
+            for chunk in chunks(list(new_mapping_ids), 1000):
+                batch_index_resources.apply_async(
+                    ('mapping', dict(versioned_object_id__in=chunk), True), queue='indexing')
 
         self.elapsed_seconds = time.time() - self.start_time
 

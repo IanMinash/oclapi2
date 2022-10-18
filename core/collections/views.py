@@ -42,7 +42,7 @@ from core.common.exceptions import Http409, Http405
 from core.common.mixins import (
     ConceptDictionaryCreateMixin, ListWithHeadersMixin, ConceptDictionaryUpdateMixin,
     ConceptContainerExportMixin,
-    ConceptContainerProcessingMixin, ConceptContainerExtraRetrieveUpdateDestroyView)
+    ConceptContainerProcessingMixin)
 from core.common.permissions import (
     CanViewConceptDictionary, CanEditConceptDictionary, HasAccessToVersionedObject,
     CanViewConceptDictionaryVersion
@@ -54,7 +54,7 @@ from core.common.tasks import add_references, export_collection, delete_collecti
     index_expansion_mappings, link_references_to_resources, reference_old_to_new_structure, \
     link_all_references_to_resources, link_expansions_repo_versions
 from core.common.utils import compact_dict_by_values, parse_boolean_query_param
-from core.common.views import BaseAPIView, BaseLogoView
+from core.common.views import BaseAPIView, BaseLogoView, ConceptContainerExtraRetrieveUpdateDestroyView
 from core.concepts.documents import ConceptDocument
 from core.concepts.models import Concept
 from core.concepts.search import ConceptSearch
@@ -261,8 +261,11 @@ class CollectionRetrieveUpdateDestroyView(CollectionBaseView, ConceptDictionaryU
         collection = self.get_object()
 
         if not self.is_inline_requested():
-            task = delete_collection.delay(collection.id)
-            return Response(dict(task=task.id), status=status.HTTP_202_ACCEPTED)
+            try:
+                task = delete_collection.delay(collection.id)
+                return Response(dict(task=task.id), status=status.HTTP_202_ACCEPTED)
+            except AlreadyQueued:
+                return Response(dict(detail='Already Queued'), status=status.HTTP_409_CONFLICT)
 
         result = delete_collection(collection.id)
 
