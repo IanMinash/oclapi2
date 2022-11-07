@@ -19,7 +19,7 @@ from core.collections.translators import CollectionReferenceTranslator
 from core.collections.utils import is_concept, is_mapping
 from core.common.constants import (
     ACCESS_TYPE_VIEW, ACCESS_TYPE_EDIT,
-    ES_REQUEST_TIMEOUT, ES_REQUEST_TIMEOUT_ASYNC, HEAD)
+    ES_REQUEST_TIMEOUT, ES_REQUEST_TIMEOUT_ASYNC, HEAD, ALL)
 from core.common.models import ConceptContainerModel, BaseResourceModel
 from core.common.tasks import seed_children_to_expansion, batch_index_resources, index_expansion_concepts, \
     index_expansion_mappings
@@ -225,7 +225,7 @@ class Collection(ConceptContainerModel):
         return self.expansions.count()
 
     def delete_references(self, expressions):
-        if expressions == '*':  # Deprecated: Old way
+        if expressions == ALL:  # Deprecated: Old way
             references_to_be_deleted = self.references
             if self.expansion_uri:
                 self.expansion.delete_expressions(expressions)
@@ -529,20 +529,30 @@ class CollectionReference(models.Model):
             'repo_version': get(self.cascade, 'source_version') or self.version or HEAD,
             'source_mappings': method.lower() == SOURCE_MAPPINGS,
             'source_to_concepts': method.lower() == SOURCE_TO_CONCEPTS,
-            'cascade_levels': 1 if self.cascade == method else get(self.cascade, 'cascade_levels', '*'),
+            'cascade_levels': 1 if self.cascade == method else get(self.cascade, 'cascade_levels', ALL),
         }
         if is_dict:
-            for attr in ['cascade_mappings', 'cascade_hierarchy', 'include_mappings', 'reverse', 'max_results']:
+            for attr in ['cascade_mappings', 'cascade_hierarchy', 'reverse', 'max_results']:
                 if attr in self.cascade:
                     cascade_params[attr] = get(self.cascade, attr)
             map_types = get(self.cascade, 'map_types', None)
             exclude_map_types = get(self.cascade, 'exclude_map_types', None)
+            return_map_types = get(self.cascade, 'return_map_types', None)
             mappings_criteria = Q()
             if map_types:
                 mappings_criteria &= Q(map_type__in=compact(map_types.split(',')))
             if exclude_map_types:
                 mappings_criteria &= ~Q(map_type__in=compact(exclude_map_types.split(',')))
             cascade_params['mappings_criteria'] = mappings_criteria
+            include_mappings = get(self.cascade, 'include_mappings')
+            if include_mappings is False or return_map_types in ['False', 'false', False, '0', 0]:
+                return_map_types_criteria = False
+            elif return_map_types:
+                return_map_types_criteria = Q() if return_map_types == ALL else Q(
+                    map_type__in=compact(return_map_types.split(',')))
+            else:
+                return_map_types_criteria = mappings_criteria
+            cascade_params['return_map_types_criteria'] = return_map_types_criteria
         return cascade_params
 
     def __is_exact_search_filter(self):
@@ -870,7 +880,7 @@ class Expansion(BaseResourceModel):
     def delete_expressions(self, expressions):  # Deprecated: Old way, must use delete_references instead
         concepts_filters = None
         mappings_filters = None
-        if expressions == '*':
+        if expressions == ALL:
             if self.concepts.exists():
                 concepts_filters = dict(id__in=list(self.concepts.values_list('id', flat=True)))
                 self.concepts.clear()
@@ -902,25 +912,34 @@ class Expansion(BaseResourceModel):
         index_concepts = False
         index_mappings = False
         should_reevaluate = attempt_reevaluate and not self.is_auto_generated
-        include_system_version = None
-        if should_reevaluate and self.parameters.get(ExpansionParameters.INCLUDE_SYSTEM):
-            system_version = self.parameters.get(ExpansionParameters.INCLUDE_SYSTEM)
-            include_system_version = ConceptContainerModel.resolve_reference_expression(system_version)
-            if not include_system_version.id:
-                include_system_version = None
+        include_system_versions = []
+        system_versions = self.parameters.get(ExpansionParameters.INCLUDE_SYSTEM)
+        if should_reevaluate and system_versions:
+            for system_version in compact(system_versions.split(',')):
+                version = ConceptContainerModel.resolve_reference_expression(system_version.strip())
+                if version.id:
+                    include_system_versions.append(version)
 
         def get_ref_results(ref):
             # attempt_reevaluate is False for delete reference(s)
             nonlocal resolved_valueset_versions
             nonlocal resolved_system_versions
-            _system_version = include_system_version if ref.can_compute_against_system_version(
-                include_system_version) else None
             resolved_valueset_versions += ref.resolve_valueset_versions
-            resolved_system_versions += [_system_version] if _system_version else [ref.resolve_system_version]
+            for _system_version in include_system_versions:
+                if ref.can_compute_against_system_version(_system_version):
+                    resolved_system_versions.append(_system_version)
+
+            resolved_system_versions.append(ref.resolve_system_version)
+
+            _concepts = Concept.objects.none()
+            _mappings = Mapping.objects.none()
 
             if should_reevaluate:
-                _concepts, _mappings = ref.get_concepts(_system_version)
-                _mappings |= ref.get_mappings(_system_version)
+                for _system_version in resolved_system_versions:
+                    __concepts, __mappings = ref.get_concepts(_system_version)
+                    _concepts |= __concepts
+                    _mappings |= __mappings
+                    _mappings |= ref.get_mappings(_system_version)
             else:
                 _concepts = ref.concepts.all()
                 _mappings = ref.mappings.all()

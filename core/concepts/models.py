@@ -6,13 +6,13 @@ from django.db import models, IntegrityError, transaction, connection
 from django.db.models import F, Q
 from pydash import get, compact
 
-from core.common.constants import ISO_639_1, LATEST, HEAD
+from core.common.constants import ISO_639_1, LATEST, HEAD, ALL
 from core.common.mixins import SourceChildMixin
 from core.common.models import VersionedModel
 from core.common.tasks import process_hierarchy_for_new_concept, process_hierarchy_for_concept_version, \
     process_hierarchy_for_new_parent_concept_version
 from core.common.utils import generate_temp_version, drop_version, \
-    encode_string, decode_string, named_tuple_fetchall, startswith_temp_version
+    encode_string, decode_string, named_tuple_fetchall, startswith_temp_version, is_versioned_uri
 from core.concepts.constants import CONCEPT_TYPE, LOCALES_FULLY_SPECIFIED, LOCALES_SHORT, LOCALES_SEARCH_INDEX_TERM, \
     CONCEPT_WAS_RETIRED, CONCEPT_IS_ALREADY_RETIRED, CONCEPT_IS_ALREADY_NOT_RETIRED, CONCEPT_WAS_UNRETIRED, \
     PERSIST_CLONE_ERROR, PERSIST_CLONE_SPECIFY_USER_ERROR, ALREADY_EXISTS, CONCEPT_REGEX, MAX_LOCALES_LIMIT, \
@@ -892,13 +892,13 @@ class Concept(ConceptValidationMixin, SourceChildMixin, VersionedModel):  # pyli
 
     @property
     def parent_concept_urls(self):
-        return self.__get_hierarchy_concept_urls('parent_concepts')
+        return self.get_hierarchy_concept_urls('parent_concepts')
 
     @property
     def child_concept_urls(self):
-        return self.__get_hierarchy_concept_urls('child_concepts')
+        return self.get_hierarchy_concept_urls('child_concepts')
 
-    def __get_hierarchy_concept_urls(self, relation):
+    def get_hierarchy_concept_urls(self, relation, versioned=False):
         queryset = get(self, relation).all()
         if self.is_latest_version:
             queryset |= get(self.versioned_object, relation).all()
@@ -906,7 +906,15 @@ class Concept(ConceptValidationMixin, SourceChildMixin, VersionedModel):  # pyli
             latest_version = self.get_latest_version()
             if latest_version:
                 queryset |= get(latest_version, relation).all()
-        return self.__format_hierarchy_uris(queryset.values_list('uri', flat=True))
+        uris = queryset.values_list('uri', flat=True)
+        if versioned:
+            return self.__format_hierarchy_versioned_uris(uris)
+        return self.__format_hierarchy_uris(uris)
+
+    def get_hierarchy_queryset(self, relation, repo_version, filters=None):
+        filters = filters or {}
+        queryset = Concept.objects.filter(uri__in=self.get_hierarchy_concept_urls(relation, not repo_version.is_head))
+        return queryset.filter(**filters)
 
     def child_concept_queryset(self):
         urls = self.child_concept_urls
@@ -943,6 +951,10 @@ class Concept(ConceptValidationMixin, SourceChildMixin, VersionedModel):  # pyli
     def __format_hierarchy_uris(uris):
         return list({drop_version(uri) for uri in uris})
 
+    @staticmethod
+    def __format_hierarchy_versioned_uris(uris):
+        return list({uri for uri in uris if is_versioned_uri(uri)})
+
     def get_hierarchy_path(self):
         result = []
         parent_concept = self.parent_concepts.first()
@@ -961,8 +973,9 @@ class Concept(ConceptValidationMixin, SourceChildMixin, VersionedModel):  # pyli
 
     def cascade(  # pylint: disable=too-many-arguments,too-many-locals
             self, repo_version=None, source_mappings=True, source_to_concepts=True,
-            mappings_criteria=None, cascade_mappings=True, cascade_hierarchy=True, cascade_levels='*',
-            include_mappings=True, include_retired=False, reverse=False, max_results=1000
+            mappings_criteria=None, cascade_mappings=True, cascade_hierarchy=True, cascade_levels=ALL,
+            include_retired=False, reverse=False, return_map_types_criteria=None,
+            max_results=1000
     ):
         from core.mappings.models import Mapping
         result = dict(concepts=Concept.objects.filter(id=self.id), mappings=Mapping.objects.none())
@@ -985,7 +998,7 @@ class Concept(ConceptValidationMixin, SourceChildMixin, VersionedModel):  # pyli
         cascaded = []
 
         def iterate(level):
-            if level == '*' or level > 0:
+            if level == ALL or level > 0:
                 if not cascaded or (result['concepts'].count() + result['mappings'].count()) < max_results:
                     not_cascaded = result['concepts'].exclude(
                         versioned_object_id__in=cascaded) if cascaded else result['concepts']
@@ -995,8 +1008,9 @@ class Concept(ConceptValidationMixin, SourceChildMixin, VersionedModel):  # pyli
                                 repo_version=repo_version,
                                 source_mappings=source_mappings, source_to_concepts=source_to_concepts,
                                 mappings_criteria=mappings_criteria, cascade_mappings=cascade_mappings,
-                                cascade_hierarchy=cascade_hierarchy, include_mappings=include_mappings,
-                                include_retired=include_retired, reverse=reverse, is_collection=is_collection
+                                cascade_hierarchy=cascade_hierarchy,
+                                include_retired=include_retired, reverse=reverse, is_collection=is_collection,
+                                return_map_types_criteria=return_map_types_criteria
                             )
                             cascaded.append(concept.versioned_object_id)
                             result['concepts'] = Concept.objects.filter(
@@ -1013,15 +1027,15 @@ class Concept(ConceptValidationMixin, SourceChildMixin, VersionedModel):  # pyli
                                 ]
                             )
 
-                        iterate(level if level == '*' else level - 1)
+                        iterate(level if level == ALL else level - 1)
 
         iterate(cascade_levels)
         return result
 
     def cascade_as_hierarchy(  # pylint: disable=too-many-arguments,too-many-locals
             self, repo_version=None, source_mappings=True, source_to_concepts=True, mappings_criteria=None,
-            cascade_mappings=True, cascade_hierarchy=True, cascade_levels='*',
-            include_mappings=True, include_retired=False, reverse=False, _=None
+            cascade_mappings=True, cascade_hierarchy=True, cascade_levels=ALL,
+            include_retired=False, reverse=False, return_map_types_criteria=None, _=None
     ):
         if cascade_levels == 0:
             return self
@@ -1048,7 +1062,7 @@ class Concept(ConceptValidationMixin, SourceChildMixin, VersionedModel):  # pyli
         cascaded = {}
 
         def iterate(level):
-            if level == '*' or level > 0:
+            if level == ALL or level > 0:
                 new_level = self.current_level + 1
                 levels[new_level] = levels.get(new_level, [])
                 for concept in levels[self.current_level]:
@@ -1059,9 +1073,10 @@ class Concept(ConceptValidationMixin, SourceChildMixin, VersionedModel):  # pyli
                         repo_version=repo_version,
                         source_mappings=source_mappings, source_to_concepts=source_to_concepts,
                         mappings_criteria=mappings_criteria, cascade_mappings=cascade_mappings,
-                        cascade_hierarchy=cascade_hierarchy, include_mappings=include_mappings,
+                        cascade_hierarchy=cascade_hierarchy,
                         include_retired=include_retired, include_self=False,
-                        reverse=reverse, is_collection=is_collection
+                        reverse=reverse, is_collection=is_collection,
+                        return_map_types_criteria=return_map_types_criteria
                     )
                     cascaded_entries['concepts'] = list(
                         set(list(cascaded_entries['hierarchy_concepts']) + list(cascaded_entries['concepts'])))
@@ -1070,7 +1085,7 @@ class Concept(ConceptValidationMixin, SourceChildMixin, VersionedModel):  # pyli
                     concept_has_entries = has_entries(cascaded_entries)
                     cascaded[concept.id] = concept_has_entries
                     concept.terminal = not concept_has_entries
-                    if level == 1 and cascade_levels != '*':  # last level, when cascadeLevels are finite
+                    if level == 1 and cascade_levels != ALL:  # last level, when cascadeLevels are finite
                         for _concept in cascaded_entries['concepts']:
                             if _concept.id in cascaded:
                                 _concept.terminal = not cascaded[_concept.id]
@@ -1079,7 +1094,7 @@ class Concept(ConceptValidationMixin, SourceChildMixin, VersionedModel):  # pyli
                 if not levels[new_level]:
                     return
                 self.current_level += 1
-                iterate(level if level == '*' else level - 1)
+                iterate(level if level == ALL else level - 1)
 
         iterate(cascade_levels)
 
@@ -1102,33 +1117,40 @@ class Concept(ConceptValidationMixin, SourceChildMixin, VersionedModel):  # pyli
 
     def cascaded_resources_forward_for_source_version(  # pylint: disable=too-many-arguments,too-many-locals
             self, repo_version, source_mappings=True, source_to_concepts=True, mappings_criteria=None,
-            cascade_mappings=True, cascade_hierarchy=True, include_mappings=True, include_retired=False,
-            include_self=True
+            cascade_mappings=True, cascade_hierarchy=True, include_retired=False,
+            include_self=True, return_map_types_criteria=None
     ):
         from core.mappings.models import Mapping
         mappings = Mapping.objects.none()
         concepts = Concept.objects.filter(id=self.id) if include_self else Concept.objects.none()
         result = dict(concepts=concepts, mappings=mappings, hierarchy_concepts=Concept.objects.none())
-        mappings_criteria = mappings_criteria or Q()
+        mappings_criteria = mappings_criteria or Q()  # cascade mappings criteria
+        return_map_types_criteria = return_map_types_criteria if return_map_types_criteria is False else (
+                return_map_types_criteria or Q()
+        )
         if cascade_mappings and (source_mappings or source_to_concepts):
             mappings = repo_version.mappings.filter(
                 from_concept_id__in={self.id, self.versioned_object_id}
-            ).filter(mappings_criteria).order_by('map_type')
+            ).order_by('map_type')
             if repo_version.is_head:
                 mappings = mappings.filter(id=F('versioned_object_id'))
             if not include_retired:
                 mappings = mappings.filter(retired=False)
-            if include_mappings:
-                result['mappings'] = mappings
+            if return_map_types_criteria is not False:
+                result['mappings'] = mappings.filter(return_map_types_criteria)
         if source_to_concepts:
             if cascade_hierarchy:
-                hierarchy_queryset = self.child_concept_queryset().filter(sources=repo_version)
+                hierarchy_queryset = self.get_hierarchy_queryset(
+                    'child_concepts', repo_version, dict(sources=repo_version))
                 if not include_retired:
                     hierarchy_queryset = hierarchy_queryset.filter(retired=False)
                 result['hierarchy_concepts'] = result['hierarchy_concepts'].union(hierarchy_queryset)
-            if mappings.exists():
+            to_cascade_mappings = mappings.filter(mappings_criteria)
+            if to_cascade_mappings.exists():
                 queryset = Concept.objects.filter(
-                    id__in=mappings.values_list('to_concept_id', flat=True), parent_id=self.parent_id)
+                    id__in=to_cascade_mappings.values_list('to_concept_id', flat=True),
+                    parent_id=self.parent_id
+                )
                 queryset = repo_version.concepts.filter(
                     versioned_object_id__in=queryset.values_list('versioned_object_id', flat=True))
                 if repo_version.is_head:
@@ -1140,33 +1162,38 @@ class Concept(ConceptValidationMixin, SourceChildMixin, VersionedModel):  # pyli
 
     def cascaded_resources_reverse_for_source_version(  # pylint: disable=too-many-arguments,too-many-locals
             self, repo_version, source_mappings=True, source_to_concepts=True, mappings_criteria=None,
-            cascade_mappings=True, cascade_hierarchy=True, include_mappings=True, include_retired=False,
-            include_self=True
+            cascade_mappings=True, cascade_hierarchy=True, include_retired=False,
+            include_self=True, return_map_types_criteria=None
     ):
         from core.mappings.models import Mapping
         mappings = Mapping.objects.none()
         concepts = Concept.objects.filter(id=self.id) if include_self else Concept.objects.none()
         result = dict(concepts=concepts, mappings=mappings, hierarchy_concepts=Concept.objects.none())
-        mappings_criteria = mappings_criteria or Q()
+        mappings_criteria = mappings_criteria or Q()  # cascade mappings criteria
+        return_map_types_criteria = return_map_types_criteria if return_map_types_criteria is False else (
+                return_map_types_criteria or Q()
+        )
         if cascade_mappings and (source_mappings or source_to_concepts):
             mappings = repo_version.mappings.filter(
                 to_concept_id__in={self.id, self.versioned_object_id}
-            ).filter(mappings_criteria).order_by('map_type')
+            ).order_by('map_type')
             if repo_version.is_head:
                 mappings = mappings.filter(id=F('versioned_object_id'))
             if not include_retired:
                 mappings = mappings.filter(retired=False)
-            if include_mappings:
-                result['mappings'] = mappings
+            if return_map_types_criteria is not False:
+                result['mappings'] = mappings.filter(return_map_types_criteria)
         if source_to_concepts:
             if cascade_hierarchy:
-                hierarchy_queryset = self.parent_concept_queryset().filter(sources=repo_version)
+                hierarchy_queryset = self.get_hierarchy_queryset(
+                    'parent_concepts', repo_version, dict(sources=repo_version))
                 if not include_retired:
                     hierarchy_queryset = hierarchy_queryset.filter(retired=False)
                 result['hierarchy_concepts'] = result['hierarchy_concepts'].union(hierarchy_queryset)
-            if mappings.exists():
+            to_cascade_mappings = mappings.filter(mappings_criteria)
+            if to_cascade_mappings.exists():
                 queryset = Concept.objects.filter(
-                    id__in=mappings.values_list('from_concept_id', flat=True), parent_id=self.parent_id)
+                    id__in=to_cascade_mappings.values_list('from_concept_id', flat=True), parent_id=self.parent_id)
                 queryset = repo_version.concepts.filter(versioned_object_id__in=queryset)
                 if repo_version.is_head:
                     queryset = queryset.filter(id=F('versioned_object_id'))
@@ -1178,34 +1205,38 @@ class Concept(ConceptValidationMixin, SourceChildMixin, VersionedModel):  # pyli
 
     def cascaded_resources_forward_for_collection_version(  # pylint: disable=too-many-arguments,too-many-locals
             self, repo_version, source_mappings=True, source_to_concepts=True, mappings_criteria=None,
-            cascade_mappings=True, cascade_hierarchy=True, include_mappings=True, include_retired=False,
-            include_self=True
+            cascade_mappings=True, cascade_hierarchy=True, include_retired=False,
+            include_self=True, return_map_types_criteria=None
     ):
         from core.mappings.models import Mapping
         mappings = Mapping.objects.none()
         concepts = Concept.objects.filter(id=self.id) if include_self else Concept.objects.none()
         result = dict(concepts=concepts, mappings=mappings, hierarchy_concepts=Concept.objects.none())
-        mappings_criteria = mappings_criteria or Q()
+        mappings_criteria = mappings_criteria or Q()  # cascade mappings criteria
+        return_map_types_criteria = return_map_types_criteria if return_map_types_criteria is False else (
+                return_map_types_criteria or Q()
+        )
         expansion = repo_version.expansion
         if not expansion:
             return result
         if cascade_mappings and (source_mappings or source_to_concepts):
             mappings = expansion.mappings.filter(
                 from_concept_id__in={self.id, self.versioned_object_id}
-            ).filter(mappings_criteria).order_by('map_type')
+            ).order_by('map_type')
             if not include_retired:
                 mappings = mappings.filter(retired=False)
-            if include_mappings:
-                result['mappings'] = mappings
+            if return_map_types_criteria is not False:
+                result['mappings'] = mappings.filter(return_map_types_criteria)
         if source_to_concepts:
             if cascade_hierarchy:
-                hierarchy_queryset = self.child_concept_queryset().filter(
-                    expansion_set__collection_version=repo_version)
+                hierarchy_queryset = self.get_hierarchy_queryset(
+                    'child_concepts', repo_version, dict(expansion_set__collection_version=repo_version))
                 if not include_retired:
                     hierarchy_queryset = hierarchy_queryset.filter(retired=False)
                 result['hierarchy_concepts'] = result['hierarchy_concepts'].union(hierarchy_queryset)
-            if mappings.exists():
-                queryset = Concept.objects.filter(id__in=mappings.values_list('to_concept_id', flat=True))
+            to_cascade_mappings = mappings.filter(mappings_criteria)
+            if to_cascade_mappings.exists():
+                queryset = Concept.objects.filter(id__in=to_cascade_mappings.values_list('to_concept_id', flat=True))
                 queryset = expansion.concepts.filter(
                     versioned_object_id__in=queryset.values_list('versioned_object_id', flat=True))
                 if not include_retired:
@@ -1215,14 +1246,17 @@ class Concept(ConceptValidationMixin, SourceChildMixin, VersionedModel):  # pyli
 
     def cascaded_resources_reverse_for_collection_version(  # pylint: disable=too-many-arguments,too-many-locals
             self, repo_version, source_mappings=True, source_to_concepts=True, mappings_criteria=None,
-            cascade_mappings=True, cascade_hierarchy=True, include_mappings=True, include_retired=False,
-            include_self=True
+            cascade_mappings=True, cascade_hierarchy=True, include_retired=False,
+            include_self=True, return_map_types_criteria=None
     ):
         from core.mappings.models import Mapping
         mappings = Mapping.objects.none()
         concepts = Concept.objects.filter(id=self.id) if include_self else Concept.objects.none()
         result = dict(concepts=concepts, mappings=mappings, hierarchy_concepts=Concept.objects.none())
-        mappings_criteria = mappings_criteria or Q()
+        mappings_criteria = mappings_criteria or Q()  # cascade mappings criteria
+        return_map_types_criteria = return_map_types_criteria if return_map_types_criteria is False else (
+                return_map_types_criteria or Q()
+        )
         expansion = repo_version.expansion
 
         if not expansion:
@@ -1231,20 +1265,21 @@ class Concept(ConceptValidationMixin, SourceChildMixin, VersionedModel):  # pyli
         if cascade_mappings and (source_mappings or source_to_concepts):
             mappings = expansion.mappings.filter(
                 to_concept_id__in={self.id, self.versioned_object_id}
-            ).filter(mappings_criteria).order_by('map_type')
+            ).order_by('map_type')
             if not include_retired:
                 mappings = mappings.filter(retired=False)
-            if include_mappings:
-                result['mappings'] = mappings
+            if return_map_types_criteria is not False:
+                result['mappings'] = mappings.filter(return_map_types_criteria)
         if source_to_concepts:
             if cascade_hierarchy:
-                hierarchy_queryset = self.parent_concept_queryset().filter(
-                    expansion_set__collection_version=repo_version)
+                hierarchy_queryset = self.get_hierarchy_queryset(
+                    'parent_concepts', repo_version, dict(expansion_set__collection_version=repo_version))
                 if not include_retired:
                     hierarchy_queryset = hierarchy_queryset.filter(retired=False)
                 result['hierarchy_concepts'] = result['hierarchy_concepts'].union(hierarchy_queryset)
-            if mappings.exists():
-                queryset = Concept.objects.filter(id__in=mappings.values_list('from_concept_id', flat=True))
+            to_cascade_mappings = mappings.filter(mappings_criteria)
+            if to_cascade_mappings.exists():
+                queryset = Concept.objects.filter(id__in=to_cascade_mappings.values_list('from_concept_id', flat=True))
                 queryset = expansion.concepts.filter(versioned_object_id__in=queryset)
                 if not include_retired:
                     queryset = queryset.filter(retired=False)

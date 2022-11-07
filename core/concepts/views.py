@@ -1,3 +1,4 @@
+from django.conf import settings
 from django.db.models import F, Q
 from django.http import Http404
 from drf_yasg.utils import swagger_auto_schema
@@ -21,7 +22,7 @@ from core.common.swagger_parameters import (
     include_facets_header, updated_since_param, include_inverse_mappings_param, include_retired_param,
     compress_header, include_source_versions_param, include_collection_versions_param, cascade_method_param,
     cascade_map_types_params, cascade_exclude_map_types_params, cascade_hierarchy_param, cascade_mappings_param,
-    include_mappings_param, cascade_levels_param, cascade_direction_param, cascade_view_hierarchy)
+    cascade_levels_param, cascade_direction_param, cascade_view_hierarchy, return_map_types_params)
 from core.common.tasks import delete_concept, make_hierarchy
 from core.common.utils import to_parent_uri_from_kwargs, generate_temp_version
 from core.common.views import SourceChildCommonBaseView, SourceChildExtrasView, \
@@ -96,6 +97,24 @@ class ConceptLookupValuesView(ListAPIView, BaseAPIView):  # pragma: no cover
         self.set_parent_resource()
         if self.parent_resource:
             queryset = self.parent_resource.concepts_set.filter(id=F('versioned_object_id'))
+            if self.is_verbose():
+                queryset = queryset.prefetch_related('names')
+            return queryset
+
+        raise Http404()
+
+
+# this is a cached view (expiry 24 hours)
+# driver from settings.DEFAULT_LOCALES_REPO_URI
+class ConceptDefaultLocalesView(ListAPIView, BaseAPIView):  # pragma: no cover
+    serializer_class = ConceptLookupListSerializer
+    permission_classes = (AllowAny, )
+
+    def get_queryset(self):
+        from core.sources.models import Source
+        source = Source.objects.filter(uri=settings.DEFAULT_LOCALES_REPO_URI).first()
+        if source:
+            queryset = source.concepts_set.filter(id=F('versioned_object_id'))
             if self.is_verbose():
                 queryset = queryset.prefetch_related('names')
             return queryset
@@ -344,8 +363,8 @@ class ConceptCascadeView(ConceptBaseView):
 
     @swagger_auto_schema(
         manual_parameters=[
-            cascade_method_param, cascade_map_types_params, cascade_exclude_map_types_params,
-            cascade_hierarchy_param, cascade_mappings_param, include_mappings_param, cascade_levels_param,
+            cascade_method_param, cascade_map_types_params, cascade_exclude_map_types_params, return_map_types_params,
+            cascade_hierarchy_param, cascade_mappings_param, cascade_levels_param,
             cascade_direction_param, cascade_view_hierarchy, include_retired_param
         ]
     )
@@ -354,7 +373,7 @@ class ConceptCascadeView(ConceptBaseView):
         self.set_parent_resource(False)
         bundle = Bundle(
             root=instance, params=self.request.query_params, verbose=self.is_verbose(),
-            repo_version=self.parent_resource
+            repo_version=self.parent_resource, requested_url=self.request.get_full_path()
         )
         bundle.cascade()
         return Response(BundleSerializer(bundle, context=dict(request=request)).data)

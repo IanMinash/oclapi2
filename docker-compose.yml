@@ -1,4 +1,4 @@
-version: '3'
+version: '3.4'
 
 services:
   db:
@@ -55,6 +55,15 @@ services:
     restart: "always"
     healthcheck:
       test: ["CMD-SHELL", "-c", "CELERY_WORKER_NAME=default ./ping_celery_worker.sh"]
+    env_file: .env
+  celery_beat:
+    image: openconceptlab/oclapi2:${ENVIRONMENT-production}
+    command: ["bash", "-c", "./start_celery_beat.sh"]
+    restart: "always"
+    healthcheck:
+      test: ["CMD", "python", "manage.py", "celery_beat_healthcheck"]
+      interval: 1m
+      retries: 3
     env_file: .env
   celery_indexing:
     image: openconceptlab/oclapi2:${ENVIRONMENT-production}

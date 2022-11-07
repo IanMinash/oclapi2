@@ -1097,7 +1097,7 @@ class ConceptCascadeViewTest(OCLAPITestCase):
         )
 
         response = self.client.get(
-            concept1.uri + '$cascade/?method=sourceToConcepts&cascadeLevels=1&includeMappings=false')
+            concept1.uri + '$cascade/?method=sourceToConcepts&cascadeLevels=1&returnMapTypes=false')
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(len(response.data['entry']), 2)
@@ -1123,7 +1123,8 @@ class ConceptCascadeViewTest(OCLAPITestCase):
         )
 
         response = self.client.get(
-            concept1.uri + '$cascade/?method=sourceToConcepts&mapTypes=map_type1&cascadeLevels=1')
+            concept1.uri +
+            '$cascade/?method=sourceToConcepts&mapTypes=map_type1&cascadeLevels=1&returnMapTypes=map_type1')
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(len(response.data['entry']), 3)
@@ -1137,7 +1138,8 @@ class ConceptCascadeViewTest(OCLAPITestCase):
         )
 
         response = self.client.get(
-            concept1.uri + '$cascade/?method=sourceToConcepts&excludeMapTypes=map_type1&cascadeLevels=1')
+            concept1.uri +
+            '$cascade/?method=sourceToConcepts&excludeMapTypes=map_type1&cascadeLevels=1&returnMapTypes=map_type2')
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(len(response.data['entry']), 2)
@@ -1200,7 +1202,8 @@ class ConceptCascadeViewTest(OCLAPITestCase):
             ])
         )
 
-        response = self.client.get(concept3.uri + '$cascade/?method=sourceToConcepts&mapTypes=foobar&cascadeLevels=1')
+        response = self.client.get(
+            concept3.uri + '$cascade/?method=sourceToConcepts&mapTypes=foobar&cascadeLevels=1&returnMapTypes=foobar')
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(len(response.data['entry']), 1)
@@ -1226,7 +1229,8 @@ class ConceptCascadeViewTest(OCLAPITestCase):
             ])
         )
 
-        response = self.client.get(concept3.uri + '$cascade/?method=sourceToConcepts&mapTypes=foobar&cascadeLevels=1')
+        response = self.client.get(
+            concept3.uri + '$cascade/?method=sourceToConcepts&mapTypes=foobar&cascadeLevels=1&returnMapTypes=foobar')
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data['resourceType'], 'Bundle')
@@ -1240,7 +1244,7 @@ class ConceptCascadeViewTest(OCLAPITestCase):
         )
 
         # hierarchy response
-        response = self.client.get(concept1.uri + '$cascade/?view=hierarchy&includeMappings=false')
+        response = self.client.get(concept1.uri + '$cascade/?view=hierarchy&returnMapTypes=false')
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data['resourceType'], 'Bundle')
@@ -1248,10 +1252,9 @@ class ConceptCascadeViewTest(OCLAPITestCase):
         entry = response.data['entry']
         self.assertEqual(
             list(entry.keys()),
-            ['uuid', 'id', 'name', 'type', 'url', 'version_url', 'terminal', 'entries', 'display_name', 'retired']
+            ['uuid', 'id', 'type', 'url', 'version_url', 'terminal', 'entries', 'display_name', 'retired']
         )
         self.assertEqual(entry['uuid'], str(concept1.id))
-        self.assertEqual(entry['name'], concept1.mnemonic)
         self.assertEqual(entry['id'], concept1.mnemonic)
         self.assertEqual(entry['type'], 'Concept')
         self.assertEqual(len(entry['entries']), 1)
@@ -1300,7 +1303,7 @@ class ConceptCascadeViewTest(OCLAPITestCase):
         )
 
         # reverse hierarchy response
-        response = self.client.get(concept2.uri + '$cascade/?view=hierarchy&reverse=true&includeMappings=false')
+        response = self.client.get(concept2.uri + '$cascade/?view=hierarchy&reverse=true&returnMapTypes=false')
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data['resourceType'], 'Bundle')
@@ -1308,10 +1311,9 @@ class ConceptCascadeViewTest(OCLAPITestCase):
         entry = response.data['entry']
         self.assertEqual(
             list(entry.keys()),
-            ['uuid', 'id', 'name', 'type', 'url', 'version_url', 'terminal', 'entries', 'display_name', 'retired']
+            ['uuid', 'id', 'type', 'url', 'version_url', 'terminal', 'entries', 'display_name', 'retired']
         )
         self.assertEqual(entry['uuid'], str(concept2.id))
-        self.assertEqual(entry['name'], concept2.mnemonic)
         self.assertEqual(entry['id'], concept2.mnemonic)
         self.assertEqual(entry['type'], 'Concept')
         self.assertEqual(len(entry['entries']), 1)
@@ -1352,10 +1354,9 @@ class ConceptCascadeViewTest(OCLAPITestCase):
         entry = response.data['entry']
         self.assertEqual(
             list(entry.keys()),
-            ['uuid', 'id', 'name', 'type', 'url', 'version_url', 'terminal', 'entries', 'display_name', 'retired']
+            ['uuid', 'id', 'type', 'url', 'version_url', 'terminal', 'entries', 'display_name', 'retired']
         )
         self.assertEqual(entry['uuid'], str(concept1.id))
-        self.assertEqual(entry['name'], concept1.mnemonic)
         self.assertEqual(entry['id'], concept1.mnemonic)
         self.assertEqual(entry['type'], 'Concept')
         self.assertEqual(len(entry['entries']), 0)
@@ -1369,10 +1370,9 @@ class ConceptCascadeViewTest(OCLAPITestCase):
         entry = response.data['entry']
         self.assertEqual(
             list(entry.keys()),
-            ['uuid', 'id', 'name', 'type', 'url', 'version_url', 'terminal', 'entries', 'display_name', 'retired']
+            ['uuid', 'id', 'type', 'url', 'version_url', 'terminal', 'entries', 'display_name', 'retired']
         )
         self.assertEqual(entry['uuid'], str(concept2.id))
-        self.assertEqual(entry['name'], concept2.mnemonic)
         self.assertEqual(entry['id'], concept2.mnemonic)
         self.assertEqual(entry['type'], 'Concept')
         self.assertEqual(len(entry['entries']), 0)
@@ -1464,7 +1464,8 @@ class ConceptCascadeViewTest(OCLAPITestCase):
         )
 
         response = self.client.get(
-            collection1.uri + 'HEAD/concepts/' + concept3.mnemonic + '/$cascade/?mapTypes=map_type1')
+            collection1.uri + 'HEAD/concepts/' + concept3.mnemonic +
+            '/$cascade/?mapTypes=map_type1&returnMapTypes=map_type1')
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(len(response.data['entry']), 1)
@@ -1512,7 +1513,10 @@ class ConceptCascadeViewTest(OCLAPITestCase):
         )
 
         response = self.client.get(
-            collection2.uri + 'HEAD/concepts/' + concept2.mnemonic + '/$cascade/?excludeMapTypes=map_type2')
+            collection2.uri +
+            'HEAD/concepts/' +
+            concept2.mnemonic +
+            '/$cascade/?excludeMapTypes=map_type2&returnMapTypes=map_type1')
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(len(response.data['entry']), 6)
