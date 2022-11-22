@@ -25,7 +25,7 @@ from core.common.tasks import seed_children_to_expansion, batch_index_resources,
     index_expansion_mappings
 from core.common.utils import drop_version, to_owner_uri, generate_temp_version, es_id_in, \
     es_wildcard_search, get_resource_class_from_resource_name, get_exact_search_fields, to_snake_case, \
-    es_exact_search, es_to_pks, batch_qs, split_list_by_condition, decode_string, is_canonical_uri
+    es_exact_search, es_to_pks, batch_qs, split_list_by_condition, decode_string, is_canonical_uri, encode_string
 from core.concepts.constants import LOCALES_FULLY_SPECIFIED
 from core.concepts.models import Concept
 from core.mappings.models import Mapping
@@ -180,7 +180,6 @@ class Collection(ConceptContainerModel):
         parser.parse()
         parser.to_reference_structure()
         references = parser.to_objects()
-
         return self.add_references(references, user)
 
     def add_references(self, references, user=None):
@@ -190,14 +189,15 @@ class Collection(ConceptContainerModel):
             reference.expression = reference.build_expression()
             reference.collection = self
             reference.created_by = user
-            try:
-                self.validate(reference)
-                reference.save()
-            except Exception as ex:
-                errors[reference.expression] = ex.messages if hasattr(ex, 'messages') else ex
-                continue
-            if reference.id:
-                added_references.append(reference)
+            for _reference in reference.generate_references():
+                try:
+                    self.validate(_reference)
+                    _reference.save()
+                except Exception as ex:
+                    errors[_reference.expression] = ex.messages if hasattr(ex, 'messages') else ex
+                    continue
+                if _reference.id:
+                    added_references.append(_reference)
 
         if self.expansion_uri:
             self.expansion.add_references(added_references)
@@ -469,8 +469,10 @@ class CollectionReference(models.Model):
             cascade_params = self.get_concept_cascade_params()
             for concept in queryset:
                 result = concept.cascade(**cascade_params)
-                queryset |= result['concepts']
-                mapping_queryset |= result['mappings']
+                queryset = Concept.objects.filter(
+                    id__in=list(queryset.union(result['concepts']).values_list('id', flat=True)))
+                mapping_queryset = Mapping.objects.filter(
+                    id__in=list(mapping_queryset.union(result['mappings']).values_list('id', flat=True)))
 
         if self.should_apply_filter():
             queryset = self.apply_filters(queryset, Concept)
@@ -478,8 +480,9 @@ class CollectionReference(models.Model):
             queryset = self.transform_to_latest_version(queryset, Concept)
             if self.code:
                 concept = queryset.first()
-                self.resource_version = concept.version
-                self.expression = concept.uri
+                if concept:
+                    self.resource_version = concept.version
+                    self.expression = concept.uri
             if mapping_queryset.exists():
                 mapping_queryset = self.transform_to_latest_version(mapping_queryset, Mapping)
         return queryset, mapping_queryset
@@ -504,6 +507,39 @@ class CollectionReference(models.Model):
                 self.resource_version = mapping.version
                 self.expression = mapping.uri
         return queryset
+
+    def generate_references(self):
+        references = []
+        if self.should_generate_multiple_references():
+            concepts, mappings = self.get_concepts()
+            for concept in concepts:
+                references.append(CollectionReference(
+                    expression=concept.uri,
+                    reference_type='concepts',
+                    code=encode_string(concept.mnemonic),
+                    collection_id=self.collection_id,
+                    created_by=self.created_by,
+                    resource_version=concept.version,
+                    system=self.system,
+                    version=self.version
+                ))
+            for mapping in mappings:
+                references.append(CollectionReference(
+                    expression=mapping.uri,
+                    reference_type='mappings',
+                    code=mapping.mnemonic,
+                    collection_id=self.collection_id,
+                    created_by=self.created_by,
+                    resource_version=mapping.version,
+                    system=self.system,
+                    version=self.version
+                ))
+        else:
+            references.append(self)
+        return references
+
+    def should_generate_multiple_references(self):
+        return self.include and self.cascade and self.transform
 
     @staticmethod
     def transform_to_latest_version(queryset, klass):
@@ -903,7 +939,8 @@ class Expansion(BaseResourceModel):
         resolved_system_versions = []
 
         if not is_adding_all_references:
-            existing_exclude_refs = self.collection_version.references.exclude(include=True)
+            existing_exclude_refs = self.collection_version.references.exclude(
+                include=True).exclude(id__in=[ref.id for ref in exclude_refs])
             if isinstance(exclude_refs, QuerySet):
                 exclude_refs |= existing_exclude_refs
             else:
@@ -937,9 +974,20 @@ class Expansion(BaseResourceModel):
             if should_reevaluate:
                 for _system_version in resolved_system_versions:
                     __concepts, __mappings = ref.get_concepts(_system_version)
-                    _concepts |= __concepts
-                    _mappings |= __mappings
-                    _mappings |= ref.get_mappings(_system_version)
+                    _concepts = Concept.objects.filter(
+                        id__in=list(
+                            _concepts.union(__concepts).values_list('id', flat=True)
+                        )
+                    )
+                    _mappings = Mapping.objects.filter(
+                        id__in=list(
+                            _mappings.union(
+                                __mappings
+                            ).union(
+                                ref.get_mappings(_system_version)
+                            ).values_list('id', flat=True)
+                        )
+                    )
             else:
                 _concepts = ref.concepts.all()
                 _mappings = ref.mappings.all()
@@ -984,7 +1032,7 @@ class Expansion(BaseResourceModel):
             if ref.resource_version:
                 rel.remove(*resources)
             else:
-                rel.set(rel.exclude(versioned_object_id__in=rel.values_list('versioned_object_id', flat=True)))
+                rel.set(rel.exclude(versioned_object_id__in=resources.values_list('versioned_object_id', flat=True)))
         return should_index
 
     def index_resources(self, concepts, mappings):

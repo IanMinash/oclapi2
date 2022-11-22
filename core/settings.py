@@ -15,6 +15,7 @@ import os
 # Build paths inside the project like this: os.path.join(BASE_DIR, ...)
 from datetime import timedelta
 
+from celery.schedules import crontab
 from corsheaders.defaults import default_headers
 from kombu import Queue, Exchange
 
@@ -355,6 +356,10 @@ CELERYBEAT_SCHEDULE = {
         'task': 'core.common.tasks.beat_healthcheck',
         'schedule': timedelta(seconds=60),
     },
+    'first-of-every-month': {
+        'task': 'core.common.tasks.monthly_usage_report',
+        'schedule': crontab(0, 0, day_of_month='1'),
+    },
 }
 CELERYBEAT_HEALTHCHECK_KEY = 'celery_beat_healthcheck'
 ELASTICSEARCH_DSL_PARALLEL = True
@@ -384,6 +389,7 @@ ACCOUNT_EMAIL_SUBJECT_PREFIX = os.environ.get('ACCOUNT_EMAIL_SUBJECT_PREFIX', '[
 ADMINS = (
     ('Jonathan Payne', 'paynejd@gmail.com'),
 )
+REPORTS_EMAIL = os.environ.get('REPORTS_EMAIL', 'reports@openconceptlab.org')
 
 if ENV and ENV != 'development':
     # Serving swagger static files (inserted after SecurityMiddleware)
