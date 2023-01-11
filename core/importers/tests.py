@@ -556,6 +556,62 @@ class BulkImportInlineTest(OCLTestCase):
         self.assertTrue(
             Mapping.objects.filter(map_type='Parent-child', is_latest_version=True, retired=False).exists())
 
+    @patch('core.importers.models.batch_index_resources')
+    def test_csv_import_mappings_with_sort_weight(self, batch_index_resources_mock):
+        file_content = open(
+            os.path.join(os.path.dirname(__file__), '..', 'samples/mappings_with_sort_weight.csv'), 'r'
+        ).read()
+        data = OclStandardCsvToJsonConverter(
+            input_list=csv_file_data_to_input_list(file_content), allow_special_characters=True).process()
+        importer = BulkImportInline(data, 'ocladmin', True)
+
+        self.assertEqual(len(data), 12)
+
+        importer.run()
+
+        self.assertEqual(importer.processed, 12)
+        self.assertEqual(len(importer.created), 12)
+        self.assertEqual(len(importer.failed), 0)
+        self.assertEqual(len(importer.exists), 0)
+        self.assertEqual(len(importer.updated), 0)
+        self.assertEqual(len(importer.invalid), 0)
+        self.assertEqual(len(importer.others), 0)
+        self.assertEqual(len(importer.permission_denied), 0)
+        batch_index_resources_mock.apply_async.assert_called()
+
+        self.assertTrue(
+            Concept.objects.filter(mnemonic='Act', is_latest_version=True, retired=False).exists())
+        self.assertTrue(
+            Concept.objects.filter(mnemonic='Child', is_latest_version=True, retired=False).exists())
+        self.assertTrue(
+            Concept.objects.filter(mnemonic='Child_of_child', is_latest_version=True, retired=False).exists())
+        self.assertTrue(
+            Concept.objects.filter(mnemonic='Ret', is_latest_version=True, retired=True).exists())
+        self.assertTrue(
+            Mapping.objects.filter(map_type='Child-Parent', is_latest_version=True, retired=False).exists())
+        self.assertEqual(
+            Mapping.objects.filter(map_type='Child-Parent', is_latest_version=True, retired=False).first().sort_weight,
+            None
+        )
+        self.assertEqual(
+            Mapping.objects.filter(
+                to_concept__uri='/orgs/DemoOrg/sources/MyDemoSource/concepts/Child/', is_latest_version=True
+            ).first().sort_weight,
+            2.2
+        )
+        self.assertEqual(
+            Mapping.objects.filter(
+                to_concept__uri='/orgs/DemoOrg/sources/MyDemoSource/concepts/Child_of_child/', is_latest_version=True
+            ).first().sort_weight,
+            3.0
+        )
+        self.assertEqual(
+            Mapping.objects.filter(
+                to_concept_code='non-existant', is_latest_version=True
+            ).first().sort_weight,
+            1.0
+        )
+
     @unittest.skip('[Skipped] Gets hung sometimes')
     @patch('core.importers.models.batch_index_resources')
     def test_openmrs_schema_csv_import(self, batch_index_resources_mock):
@@ -829,24 +885,39 @@ class BulkImportViewTest(OCLAPITestCase):
         self.superuser = UserProfile.objects.get(username='ocladmin')
         self.token = self.superuser.get_token()
 
+    @patch('core.importers.views.AsyncResult')
     @patch('core.importers.views.flower_get')
-    def test_get_without_task_id(self, flower_get_mock):
+    def test_get_without_task_id(self, flower_get_mock, async_result_mock):
+        async_result_mock.return_value = Mock(state='DONE')
         task_id1 = f"{str(uuid.uuid4())}-ocladmin~priority"
         task_id2 = f"{str(uuid.uuid4())}-foobar~normal"
+        task_id3 = f"{str(uuid.uuid4())}-foobar~pending"
         flower_tasks = {
             task_id1: dict(name='core.common.tasks.bulk_import', state='success'),
             task_id2: dict(name='core.common.tasks.bulk_import', state='failed'),
+            task_id3: dict(name='core.common.tasks.bulk_import', state='PENDING'),
         }
         flower_get_mock.return_value = Mock(json=Mock(return_value=flower_tasks))
 
         response = self.client.get(
-            '/importers/bulk-import/?username=ocladmin',
+            '/importers/bulk-import/?username=ocladmin&verbose=true',
             HTTP_AUTHORIZATION='Token ' + self.token,
             format='json'
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.data, [dict(queue='priority', state='success', task=task_id1, username='ocladmin')])
+        self.assertEqual(
+            response.data,
+            [
+                dict(
+                    queue='priority',
+                    state='success',
+                    task=task_id1,
+                    username='ocladmin',
+                    details=dict(name='core.common.tasks.bulk_import', state='success')
+                )
+            ]
+        )
 
         response = self.client.get(
             '/importers/bulk-import/?username=foobar',
@@ -855,7 +926,12 @@ class BulkImportViewTest(OCLAPITestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.data, [dict(queue='normal', state='failed', task=task_id2, username='foobar')])
+        self.assertEqual(
+            response.data,
+            [
+                dict(queue='normal', state='failed', task=task_id2, username='foobar'),
+                dict(queue='pending', state='DONE', task=task_id3, username='foobar'),
+            ])
 
         response = self.client.get(
             '/importers/bulk-import/priority/?username=ocladmin',
@@ -1081,6 +1157,17 @@ class BulkImportViewTest(OCLAPITestCase):
         response = self.client.post(
             "/importers/bulk-import/upload/?update_if_exists=true",
             {'file': ''},
+            HTTP_AUTHORIZATION='Token ' + self.token,
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data, dict(exception='No content to import'))
+
+        file = open(
+                os.path.join(os.path.dirname(__file__), '..', 'samples/invalid_import_csv.csv'), 'r'
+            )
+        response = self.client.post(
+            "/importers/bulk-import/upload/?update_if_exists=true",
+            {'file': file},
             HTTP_AUTHORIZATION='Token ' + self.token,
         )
         self.assertEqual(response.status_code, 400)

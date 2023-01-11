@@ -24,7 +24,7 @@ from core.common.constants import SEARCH_PARAM, LIST_DEFAULT_LIMIT, CSV_DEFAULT_
     LIMIT_PARAM, NOT_FOUND, MUST_SPECIFY_EXTRA_PARAM_IN_BODY, INCLUDE_RETIRED_PARAM, VERBOSE_PARAM, HEAD, LATEST, \
     BRIEF_PARAM, ES_REQUEST_TIMEOUT, INCLUDE_INACTIVE, FHIR_LIMIT_PARAM
 from core.common.exceptions import Http400
-from core.common.mixins import PathWalkerMixin, ListWithHeadersMixin
+from core.common.mixins import PathWalkerMixin
 from core.common.serializers import RootSerializer
 from core.common.utils import compact_dict_by_values, to_snake_case, to_camel_case, parse_updated_since_param, \
     is_url_encoded_string
@@ -145,7 +145,14 @@ class BaseAPIView(generics.GenericAPIView, PathWalkerMixin):
         if queryset is None:
             queryset = self.get_queryset()
 
-        return super().filter_queryset(queryset).order_by(self.default_qs_sort_attr)
+        _queryset = super().filter_queryset(queryset)
+
+        if self.default_qs_sort_attr:
+            if isinstance(self.default_qs_sort_attr, str):
+                _queryset = _queryset.order_by(self.default_qs_sort_attr)
+            elif isinstance(self.default_qs_sort_attr, list):
+                _queryset = _queryset.order_by(*self.default_qs_sort_attr)
+        return _queryset
 
     def get_sort_and_desc(self):
         query_params = self.request.query_params.dict()
@@ -586,6 +593,13 @@ class BaseAPIView(generics.GenericAPIView, PathWalkerMixin):
         for word in words[1:]:
             criterion |= get_query(word)
 
+        if self.is_concept_document() and ' ' in search_string:
+            criterion |= Q("wildcard", _name=dict(value=search_string, boost=11))
+            criterion |= Q("wildcard", synonyms=dict(value=search_string, boost=10))
+            criterion |= Q("wildcard", synonyms=dict(value=search_string.replace(' ', '*'), boost=9))
+            criterion |= Q("wildcard", synonyms=dict(value=search_string.replace(' ', '*') + '*', boost=8))
+            criterion |= Q("wildcard", synonyms=dict(value='*' + search_string.replace(' ', '*') + '*', boost=7))
+
         return criterion
 
     def get_search_results_qs(self):
@@ -867,65 +881,14 @@ class ConceptDormantLocalesView(APIView):  # pragma: no cover
 
     @staticmethod
     def get(_, **kwargs):  # pylint: disable=unused-argument
-        from core.concepts.models import LocalizedText
-        count = LocalizedText.dormants()
+        from core.concepts.models import ConceptName
+        count = ConceptName.dormants()
         return Response(count, status=status.HTTP_200_OK)
 
     @staticmethod
     def delete(_, **kwargs):  # pylint: disable=unused-argument
         from core.common.tasks import delete_dormant_locales
         delete_dormant_locales.delay()
-        return Response(status=status.HTTP_204_NO_CONTENT)
-
-
-# only meant to fix data (used once due to a bug)
-class ConceptMultipleLatestVersionsView(BaseAPIView, ListWithHeadersMixin):  # pragma: no cover
-    permission_classes = (IsAdminUser, )
-
-    def get_serializer_class(self):
-        from core.concepts.serializers import ConceptVersionListSerializer, ConceptVersionDetailSerializer
-
-        if self.is_verbose():
-            return ConceptVersionDetailSerializer
-        return ConceptVersionListSerializer
-
-    def get_queryset(self):
-        from core.concepts.models import Concept
-        duplicate_version_mnemonics = [concept.mnemonic for concept in Concept.duplicate_latest_versions()]
-        if len(duplicate_version_mnemonics) > 0:
-            return Concept.objects.filter(mnemonic__in=duplicate_version_mnemonics, is_latest_version=True)
-        return Concept.objects.none()
-
-    def get(self, request, *args, **kwargs):
-        return self.list(request, *args, **kwargs)
-
-    def put(self, request, *args, **kwargs):  # pylint: disable=unused-argument
-        concepts = self.get_queryset()
-        if concepts.exists():
-            from core.concepts.models import Concept
-            versioned_objects = Concept.objects.filter(id__in=concepts.values_list('versioned_object_id', flat=True))
-            for concept in versioned_objects:
-                concept.dedupe_latest_versions()
-            from core.concepts.models import Concept
-            from core.concepts.documents import ConceptDocument
-            Concept.batch_index(concepts, ConceptDocument)
-
-        return Response(status=status.HTTP_204_NO_CONTENT)
-
-    def post(self, request, *args, **kwargs):  # pylint: disable=unused-argument
-        ids = self.request.data.get('ids')  # concept/version id
-        if not ids:
-            return Response(status=status.HTTP_400_BAD_REQUEST)
-
-        from core.concepts.models import Concept
-        concepts = Concept.objects.filter(id__in=ids)
-
-        for concept in concepts:
-            concept.dedupe_latest_versions()
-
-        from core.concepts.documents import ConceptDocument
-        Concept.batch_index(concepts, ConceptDocument)
-
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
