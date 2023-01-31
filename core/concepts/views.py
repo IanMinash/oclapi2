@@ -1,5 +1,5 @@
 from django.conf import settings
-from django.db.models import F, Q
+from django.db.models import F
 from django.http import Http404
 from drf_yasg.utils import swagger_auto_schema
 from pydash import get
@@ -15,7 +15,7 @@ from core.bundles.models import Bundle
 from core.bundles.serializers import BundleSerializer
 from core.common.constants import (
     HEAD, INCLUDE_INVERSE_MAPPINGS_PARAM, INCLUDE_RETIRED_PARAM, ACCESS_TYPE_NONE)
-from core.common.exceptions import Http400
+from core.common.exceptions import Http400, Http403
 from core.common.mixins import ListWithHeadersMixin, ConceptDictionaryMixin
 from core.common.swagger_parameters import (
     q_param, limit_param, sort_desc_param, page_param, exact_match_param, sort_asc_param, verbose_param,
@@ -159,6 +159,9 @@ class ConceptListView(ConceptBaseView, ListWithHeadersMixin, CreateModelMixin):
         if 'source' in self.kwargs and self.request.query_params.get('onlyParentLess', False) in ['true', True]:
             queryset = queryset.filter(parent_concepts__isnull=True)
 
+        if not self.is_brief():
+            queryset = queryset.prefetch_related('names', 'descriptions')
+
         if not parent:
             user = self.request.user
             is_anonymous = get(user, 'is_anonymous')
@@ -166,11 +169,7 @@ class ConceptListView(ConceptBaseView, ListWithHeadersMixin, CreateModelMixin):
             if is_anonymous:
                 queryset = queryset.exclude(public_access=ACCESS_TYPE_NONE)
             elif not is_staff:
-                public_queryset = queryset.exclude(public_access=ACCESS_TYPE_NONE)
-                private_queryset = queryset.filter(public_access=ACCESS_TYPE_NONE)
-                private_queryset = private_queryset.filter(
-                    Q(parent__user_id=user.id) | Q(parent__organization__members__id=user.id))
-                queryset = public_queryset.union(private_queryset)
+                queryset = queryset.filter(Concept.user_criteria(user))
 
         return queryset
 
@@ -381,6 +380,38 @@ class ConceptCascadeView(ConceptBaseView):
         return Response(BundleSerializer(bundle, context=dict(request=request)).data)
 
 
+class ConceptCloneView(ConceptCascadeView):
+    serializer_class = BundleSerializer
+
+    def post(self, request, **kwargs):  # pylint: disable=unused-argument
+        """
+        body:
+            {
+                “source_uri”: “/orgs/MyOrg/sources/MySource/”, (cloneTo)
+                “parameters”: { ….same as cascade… }
+            }
+        """
+        clone_to_source = self.get_clone_to_source()
+        self.set_parent_resource(False)
+        bundle = Bundle.clone(
+            self.get_object(), self.parent_resource, clone_to_source, request.user,
+            self.request.get_full_path(), self.is_verbose(), **(request.data.get('parameters') or {})
+        )
+        return Response(BundleSerializer(bundle, context=dict(request=request)).data)
+
+    def get_clone_to_source(self):
+        source_uri = self.request.data.get('source_uri')
+        if not source_uri:
+            raise Http400()
+        from core.sources.models import Source
+        source = Source.objects.filter(uri=source_uri).first()
+        if not source:
+            raise Http404()
+        if not source.has_edit_access(self.request.user):
+            raise Http403()
+        return source
+
+
 class ConceptChildrenView(ConceptBaseView, ListWithHeadersMixin):
     serializer_class = ConceptChildrenSerializer
     default_qs_sort_attr = 'mnemonic'
@@ -541,20 +572,22 @@ class ConceptLabelListCreateView(ConceptBaseView, ListWithHeadersMixin, ListCrea
         return getattr(instance, self.parent_list_attribute).all()
 
     def create(self, request, **_):  # pylint: disable=arguments-differ
-        serializer = self.get_serializer(data=request.data)
-        if serializer.is_valid():
-            instance = self.get_object()
-            new_version = instance.clone()
-            subject_label_attr = f"cloned_{self.parent_list_attribute}"
-            # get the current labels from the object
-            labels = getattr(new_version, subject_label_attr, [])
-            # If labels are None then we would want to initialize the labels in new_version
-            saved_instance = serializer.save()
-            labels.append(saved_instance)
-            setattr(new_version, subject_label_attr, labels)
-            new_version.comment = f'Added to {self.parent_list_attribute}: {saved_instance.name}.'
-            # save updated ConceptVersion into database
+        name = request.data.get('name', None) or request.data.get('description', None)
+        serializer = self.get_serializer(data=request.data.copy())
+        if name and serializer.is_valid():
+            new_version = self.get_object().clone()
+            new_version.comment = f'Added to {self.parent_list_attribute}: {name}.'
             errors = Concept.persist_clone(new_version, request.user)
+            if new_version.id:
+                serializer = self.get_serializer(data={**request.data, 'concept_id': new_version.id})
+                if serializer.is_valid():
+                    serializer.save()
+                    locale = serializer.instance
+                    if locale.id:
+                        versioned_object_locale = locale.clone()
+                        versioned_object_locale.concept_id = new_version.versioned_object_id
+                        versioned_object_locale.save()
+
             if errors:
                 return Response(errors, status=status.HTTP_400_BAD_REQUEST)
             headers = self.get_success_headers(serializer.data)

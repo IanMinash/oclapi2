@@ -1,4 +1,4 @@
-from django.db.models import F, Q
+from django.db.models import F
 from django.http import QueryDict, Http404
 from drf_yasg.utils import swagger_auto_schema
 from pydash import get
@@ -57,6 +57,9 @@ class MappingListView(MappingBaseView, ListWithHeadersMixin, CreateModelMixin):
 
         return MappingListSerializer
 
+    def apply_filters(self, queryset):
+        return queryset
+
     def get_queryset(self):
         is_latest_version = 'collection' not in self.kwargs and 'version' not in self.kwargs or \
                             get(self.kwargs, 'version') == HEAD
@@ -70,16 +73,14 @@ class MappingListView(MappingBaseView, ListWithHeadersMixin, CreateModelMixin):
         if is_latest_version:
             queryset = queryset.filter(id=F('versioned_object_id'))
 
+        queryset = self.apply_filters(queryset)
+
         if not parent:
             user = self.request.user
             if get(user, 'is_anonymous'):
                 queryset = queryset.exclude(public_access=ACCESS_TYPE_NONE)
             elif not get(user, 'is_staff'):
-                public_queryset = queryset.exclude(public_access=ACCESS_TYPE_NONE)
-                private_queryset = queryset.filter(public_access=ACCESS_TYPE_NONE)
-                private_queryset = private_queryset.filter(
-                    Q(parent__user_id=user.id) | Q(parent__organization__members__id=user.id))
-                queryset = public_queryset.union(private_queryset)
+                queryset = queryset.filter(Mapping.user_criteria(user))
 
         return queryset
 

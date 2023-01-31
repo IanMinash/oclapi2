@@ -1,11 +1,12 @@
 import base64
 import os
 import uuid
+from collections import OrderedDict
 from unittest.mock import patch, Mock, mock_open, ANY
 
-import factory
-
 import boto3
+import django
+import factory
 from botocore.exceptions import ClientError
 from colour_runner.django_runner import ColourRunnerMixin
 from django.conf import settings
@@ -15,6 +16,7 @@ from django.test import TestCase
 from django.test.runner import DiscoverRunner
 from moto import mock_s3
 from requests.auth import HTTPBasicAuth
+from rest_framework.exceptions import ValidationError
 from rest_framework.test import APITestCase
 
 from core.collections.models import CollectionReference
@@ -32,8 +34,11 @@ from core.orgs.models import Organization
 from core.sources.models import Source
 from core.users.models import UserProfile
 from core.users.tests.factories import UserProfileFactory
+from .backends import OCLOIDCAuthenticationBackend
 from .fhir_helpers import translate_fhir_query
+from .serializers import IdentifierSerializer
 from .services import S3, PostgresQL, DjangoAuthService, OIDCAuthService
+from .validators import URIValidator
 from ..code_systems.serializers import CodeSystemDetailSerializer
 
 
@@ -437,6 +442,82 @@ class FhirHelpersTest(OCLTestCase):
         query_set = translate_fhir_query(query_fields, query_params, query_set)
         self.assertTrue('"concepts"."version" = v1' in str(query_set.query))
         self.assertTrue('"concepts"."id" = 2' in str(query_set.query))
+
+
+class IdentifierSerializerTest(OCLTestCase):
+    def test_deserialize(self):
+        data = {'system': '/org/OCL/test',
+                'value': '1',
+                'type': {
+                    'text': 'Accession ID',
+                    'coding': [{
+                        'system': 'http://hl7.org/fhir/v2/0203',
+                        'code': 'ACSN',
+                        'display': 'ACSN'
+                    }]
+                }}
+        serializer = IdentifierSerializer(data=data)
+        valid = serializer.is_valid()
+        self.assertTrue(valid, serializer.errors)
+        self.assertDictEqual(serializer.validated_data, OrderedDict([
+            ('system', '/org/OCL/test'),
+            ('value', '1'),
+            ('type', OrderedDict([
+                ('text', 'Accession ID'),
+                ('coding', [OrderedDict([
+                    ('system', 'http://hl7.org/fhir/v2/0203'),
+                    ('code', 'ACSN'),
+                    ('display', 'ACSN')])])]))]))
+
+    def test_include_ocl_identifier(self):
+        rep = {}
+        IdentifierSerializer.include_ocl_identifier('/orgs/OCL/test/1', 'org', rep)
+
+        self.assertDictEqual(rep, {'identifier': [
+            {'system': 'http://localhost:8000',
+             'type': {
+                 'coding': [{
+                     'code': 'ACSN',
+                     'display': 'Accession ID',
+                     'system': 'http://hl7.org/fhir/v2/0203'}],
+                 'text': 'Accession ID'},
+             'value': '/orgs/OCL/test/1/'}]})
+
+    def test_validate_identifier(self):
+        IdentifierSerializer.validate_identifier([
+            {'system': 'http://localhost:8000',
+             'type': {
+                 'coding': [{
+                     'code': 'ACSN',
+                     'display': 'Accession ID',
+                     'system': 'http://hl7.org/fhir/v2/0203'}],
+                 'text': 'Accession ID'},
+             'value': '/orgs/OCL/CodeSystem/1/'}])
+
+    def test_validate_identifier_with_wrong_owner(self):
+        with self.assertRaisesRegex(ValidationError, "Owner type='org' is invalid. It must be 'users' or 'orgs'"):
+            IdentifierSerializer.validate_identifier([
+                {'system': 'http://localhost:8000',
+                 'type': {
+                     'coding': [{
+                         'code': 'ACSN',
+                         'display': 'Accession ID',
+                         'system': 'http://hl7.org/fhir/v2/0203'}],
+                     'text': 'Accession ID'},
+                 'value': '/org/OCL/CodeSystem/1/'}])
+
+    def test_validate_identifier_with_wrong_type(self):
+        with self.assertRaisesRegex(ValidationError, "Resource type='Code' is invalid. "
+                                                     "It must be 'CodeSystem' or 'ValueSet' or 'ConceptMap'"):
+            IdentifierSerializer.validate_identifier([
+                {'system': 'http://localhost:8000',
+                 'type': {
+                     'coding': [{
+                         'code': 'ACSN',
+                         'display': 'Accession ID',
+                         'system': 'http://hl7.org/fhir/v2/0203'}],
+                     'text': 'Accession ID'},
+                 'value': '/orgs/OCL/Code/1/'}])
 
 class UtilsTest(OCLTestCase):
     def test_set_and_get_current_user(self):
@@ -1104,3 +1185,75 @@ class OIDCAuthServiceTest(OCLTestCase):
             verify=False,
             headers=dict(Authorization='Bearer token')
         )
+
+
+class URIValidatorTest(OCLTestCase):
+    validator = URIValidator()
+
+    def test_invalid_value(self):
+        with self.assertRaises(django.core.exceptions.ValidationError):
+            self.validator([])
+
+    def test_valid_http_uri(self):
+        self.validator('https://openconceptlab.org/orgs/OCL/sources')
+
+    def test_valid_custom_scheme_uri(self):
+        self.validator('mailto:admin@openconceptlab.org')
+
+    def test_invalid_uri_with_unsafe_char(self):
+        with self.assertRaises(django.core.exceptions.ValidationError):
+            self.validator("mailto::\nadmin")
+
+    def test_invalid_uri_domain_too_long(self):
+        with self.assertRaises(django.core.exceptions.ValidationError):
+            hostname = "abc"*100
+            self.validator("https://" + hostname)
+
+    def test_invalid_uri_domain_wrong_char(self):
+        with self.assertRaises(django.core.exceptions.ValidationError):
+            self.validator("https://open[test/?test")
+
+    def test_invalid_uri_ipv6(self):
+        with self.assertRaises(django.core.exceptions.ValidationError):
+            self.validator("https://[56FE::2159:5BBC::6594]")
+
+
+class OCLOIDCAuthenticationBackendTest(OCLTestCase):
+    def setUp(self):
+        super().setUp()
+        self.backend = OCLOIDCAuthenticationBackend()
+        self.claim = dict(
+            preferred_username='batman', email='batman@gotham.com',
+            given_name='Bruce', family_name='Wayne',
+            email_verified=True, foo='bar'
+        )
+
+    @patch('core.users.models.UserProfile.objects')
+    def test_create_user(self, user_manager_mock):
+        self.backend.create_user(self.claim)
+        user_manager_mock.create_user.assert_called_once_with(
+            'batman',
+            email='batman@gotham.com',
+            first_name='Bruce',
+            last_name='Wayne',
+            verified=True
+        )
+
+    def test_update_user(self):
+        user = Mock()
+
+        self.backend.update_user(user, self.claim)
+
+        self.assertEqual(user.first_name, 'Bruce')
+        self.assertEqual(user.last_name, 'Wayne')
+        self.assertEqual(user.email, 'batman@gotham.com')
+
+        user.save.assert_called_once()
+
+    def test_filter_users_by_claims(self):
+        batman = UserProfileFactory(username='batman')
+        UserProfileFactory(username='superman@not-gotham.com')
+
+        users = self.backend.filter_users_by_claims(self.claim)
+        self.assertEqual(users.count(), 1)
+        self.assertEqual(users.first(), batman)

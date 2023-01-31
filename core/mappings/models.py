@@ -22,46 +22,81 @@ class Mapping(MappingValidationMixin, SourceChildMixin, VersionedModel):
         db_table = 'mappings'
         unique_together = ('mnemonic', 'version', 'parent')
         indexes = [
-                      models.Index(name='mappings_updated_4589ad_idx', fields=['-updated_at'],
-                                   condition=(Q(is_active=True) & Q(retired=False) & Q(is_latest_version=True) &
-                                              ~Q(public_access='None'))),
-                      models.Index(name='mappings_ver_updated_at_idx', fields=['-updated_at'],
-                                   condition=(Q(is_active=True) & Q(retired=False) & ~Q(public_access='None'))),
-                      models.Index(name='mappings_vers_updated_idx', fields=['-updated_at'],
-                                   condition=(Q(is_active=True) & Q(retired=False) & Q(id=F('versioned_object_id')) &
-                                              ~Q(public_access='None'))),
-                      models.Index(name='mappings_public_conditional', fields=['public_access'],
-                                   condition=(Q(is_active=True) & Q(retired=False) & Q(is_latest_version=True) &
-                                              ~Q(public_access='None'))),
-                      models.Index(name='mappings_ver_public', fields=['public_access'],
-                                   condition=(Q(is_active=True) & Q(retired=False) & ~Q(public_access='None'))),
-                      models.Index(name='mappings_ver_public_cond', fields=['public_access'],
-                                   condition=(Q(is_active=True) & Q(retired=False) & Q(id=F('versioned_object_id')) &
-                                              ~Q(public_access='None'))),
-                      models.Index(name='mappings_public_cond2', fields=['parent_id'],
-                                   condition=(Q(is_active=True) & Q(retired=False) & Q(is_latest_version=True) &
-                                              ~Q(public_access='None'))),
-                      models.Index(name='mappings_ver_public_cond2', fields=['parent_id'],
-                                   condition=(Q(is_active=True) & Q(retired=False) & Q(id=F('versioned_object_id')) &
-                                              ~Q(public_access='None'))),
-                      models.Index(name='mappings_all_for_count', fields=['is_active'],
-                                   condition=(Q(is_active=True) & Q(retired=False) & Q(is_latest_version=True))),
-                      models.Index(name='mappings_ver_for_count', fields=['is_active'],
-                                   condition=(Q(is_active=True) & Q(retired=False))),
-                      models.Index(name='mappings_ver_all_for_count', fields=['is_active'],
-                                   condition=(Q(is_active=True) & Q(retired=False) & Q(id=F('versioned_object_id')))),
-                      models.Index(name='mappings_all_for_count2', fields=['parent_id'],
-                                   condition=(Q(is_active=True) & Q(retired=False) & Q(is_latest_version=True))),
-                      models.Index(name='mappings_ver_all_for_count2', fields=['parent_id'],
-                                   condition=(Q(is_active=True) & Q(retired=False) & Q(id=F('versioned_object_id')))),
-                      models.Index(name='mappings_all_for_sort', fields=['-updated_at'],
-                                   condition=(Q(is_active=True) & Q(retired=False) & Q(is_latest_version=True))),
-                      models.Index(name='mappings_ver_for_sort', fields=['-updated_at'],
-                                   condition=(Q(is_active=True) & Q(retired=False))),
-                      models.Index(name='mappings_ver_all_for_sort', fields=['-updated_at'],
-                                   condition=(Q(is_active=True) & Q(retired=False) & Q(id=F('versioned_object_id')))),
-                  ] + VersionedModel.Meta.indexes
-
+            models.Index(
+                name='mappings_updated_6490d8_idx',
+                fields=['-updated_at', 'is_active', 'retired', 'public_access'],
+                condition=(Q(is_active=True) & Q(retired=False) & ~Q(public_access='None'))
+            ),
+            models.Index(
+                name='mappings_ver_sort_idx',
+                fields=['-updated_at', 'is_active', 'retired', 'is_latest_version', 'public_access'],
+                condition=(Q(is_active=True) & Q(retired=False) & Q(is_latest_version=True) & ~Q(public_access='None'))
+            ),
+            models.Index(
+                name='mappings_public_conditional',
+                fields=['public_access', 'is_active', 'retired', 'is_latest_version'],
+                condition=(Q(is_active=True) & Q(retired=False) & Q(is_latest_version=True) & ~Q(public_access='None'))
+            ),
+            models.Index(
+                name='mappings_ver_public',
+                fields=['is_active', 'retired', 'public_access'],
+                condition=(Q(is_active=True) & Q(retired=False) & ~Q(public_access='None'))
+            ),
+            models.Index(
+                name='mappings_all_for_count',
+                fields=['is_active', 'retired', 'is_latest_version'],
+                condition=(Q(is_active=True) & Q(retired=False) & Q(is_latest_version=True))
+            ),
+            models.Index(
+                name='mappings_ver_for_count',
+                fields=['is_active', 'retired'],
+                condition=(Q(is_active=True) & Q(retired=False))
+            ),
+            models.Index(
+                name='mappings_all_for_count2',
+                fields=['parent_id', 'is_active', 'retired', 'is_latest_version'],
+                condition=(Q(is_active=True) & Q(retired=False) & Q(is_latest_version=True))
+            ),
+            models.Index(
+                name='mappings_all_for_sort',
+                fields=['-updated_at', 'is_active', 'retired', 'is_latest_version'],
+                condition=(Q(is_active=True) & Q(retired=False) & Q(is_latest_version=True))
+            ),
+            models.Index(
+                name='mappings_ver_for_sort',
+                fields=['-updated_at', 'is_active', 'retired'],
+                condition=(Q(is_active=True) & Q(retired=False))
+            ),
+            models.Index(
+                name='mappings_ver_updated_idx',
+                fields=['-updated_at', 'retired', 'public_access', 'id', 'versioned_object_id'],
+                condition=(
+                        Q(is_active=True) & Q(retired=False) & Q(id=F('versioned_object_id')) & ~Q(public_access='None')
+                )
+            ),
+            models.Index(
+                name='mappings_ver_public_cond',
+                fields=['public_access', 'is_active', 'retired', 'id', 'versioned_object_id'],
+                condition=(
+                        Q(is_active=True) & Q(retired=False) & Q(id=F('versioned_object_id')) & ~Q(public_access='None')
+                )
+            ),
+            models.Index(
+                name='mappings_ver_all_for_count',
+                fields=['is_active', 'retired', 'id', 'versioned_object_id'],
+                condition=(Q(is_active=True) & Q(retired=False) & Q(id=F('versioned_object_id')))
+            ),
+            models.Index(
+                name='mappings_ver_all_for_sort',
+                fields=['-updated_at', 'is_active', 'retired', 'id', 'versioned_object_id'],
+                condition=(Q(is_active=True) & Q(retired=False) & Q(id=F('versioned_object_id')))
+            ),
+            models.Index(
+                name='mappings_ver_all_for_sort_2',
+                fields=['-updated_at', 'is_active', 'retired'],
+                condition=(Q(is_active=True) & Q(retired=False))
+            ),
+        ] + VersionedModel.Meta.indexes
     parent = models.ForeignKey('sources.Source', related_name='mappings_set', on_delete=models.CASCADE)
     map_type = models.TextField(db_index=True)
     sort_weight = models.FloatField(db_index=True, null=True, blank=True)
@@ -243,7 +278,7 @@ class Mapping(MappingValidationMixin, SourceChildMixin, VersionedModel):
     def get_version_url_kwarg():
         return 'mapping_version'
 
-    def clone(self, user=None):
+    def clone(self, user=None, from_concept=None, to_concept=None):
         mapping = Mapping(
             version=generate_temp_version(),
             mnemonic=self.mnemonic,
@@ -256,13 +291,13 @@ class Mapping(MappingValidationMixin, SourceChildMixin, VersionedModel):
             public_access=self.public_access,
             external_id=self.external_id,
             versioned_object_id=self.versioned_object_id,
-            to_concept_id=self.to_concept_id,
+            to_concept_id=get(to_concept, 'id') or self.to_concept_id,
             to_concept_code=self.to_concept_code,
             to_concept_name=self.to_concept_name,
             to_source_id=self.to_source_id,
             to_source_url=self.to_source_url,
             to_source_version=self.to_source_version,
-            from_concept_id=self.from_concept_id,
+            from_concept_id=get(from_concept, 'id') or self.from_concept_id,
             from_concept_code=self.from_concept_code,
             from_concept_name=self.from_concept_name,
             from_source_id=self.from_source_id,
@@ -271,6 +306,10 @@ class Mapping(MappingValidationMixin, SourceChildMixin, VersionedModel):
             _index=self._index,
             sort_weight=self.sort_weight
         )
+        if to_concept:
+            mapping.to_concept = to_concept
+        if from_concept:
+            mapping.from_concept = from_concept
         if user:
             mapping.created_by = mapping.updated_by = user
 
@@ -378,6 +417,19 @@ class Mapping(MappingValidationMixin, SourceChildMixin, VersionedModel):
         instance.sort_weight = data.get('sort_weight', instance.sort_weight)
 
         return cls.persist_clone(instance, user)
+
+    def save_cloned(self):
+        parent = self.parent
+        self.is_latest_version = False
+        self.public_access = parent.public_access
+        self.save()
+        if self.id:
+            self.versioned_object_id = self.id
+            self.version = str(self.id)
+            self.save()
+            initial_version = Mapping.create_initial_version(self)
+            initial_version.sources.set([parent])
+            self.sources.set([parent])
 
     @classmethod
     def persist_new(cls, data, user):

@@ -2,7 +2,7 @@ from django.conf import settings
 from django.contrib.postgres.indexes import GinIndex, HashIndex
 from django.core.exceptions import ValidationError
 from django.core.validators import RegexValidator
-from django.db import models, IntegrityError, transaction, connection
+from django.db import models, IntegrityError, transaction
 from django.db.models import F, Q
 from pydash import get, compact
 
@@ -112,7 +112,7 @@ class ConceptDescription(AbstractLocalizedText):
 
 class ConceptName(AbstractLocalizedText):
     concept = models.ForeignKey(
-        'concepts.Concept', on_delete=models.CASCADE, null=True, blank=True, related_name='names')
+        'concepts.Concept', on_delete=models.CASCADE, related_name='names')
 
     class Meta:
         db_table = 'concept_names'
@@ -132,28 +132,6 @@ class ConceptName(AbstractLocalizedText):
             }
         )
 
-    @classmethod
-    def get_dormant_queryset(cls):
-        return cls.objects.filter(name_locales__isnull=True, description_locales__isnull=True)
-
-    @classmethod
-    def dormants(cls, raw=True):
-        if raw:
-            with connection.cursor() as cursor:
-                cursor.execute(
-                    """
-                    SELECT COUNT("concept_names"."id") FROM "concept_names"
-                    WHERE NOT EXISTS (SELECT 1 FROM "concepts_names" WHERE
-                    "concepts_names"."localizedtext_id" = "concept_names"."id")
-                    AND NOT EXISTS (SELECT 1 FROM "concepts_descriptions"
-                    WHERE "concepts_descriptions"."localizedtext_id" = "concept_names"."id")
-                    """
-                )
-                count, = cursor.fetchone()
-                return count
-
-        return cls.get_dormant_queryset().count()
-
 
 class HierarchicalConcepts(models.Model):
     child = models.ForeignKey('concepts.Concept', related_name='child_parent', on_delete=models.CASCADE)
@@ -165,46 +143,80 @@ class Concept(ConceptValidationMixin, SourceChildMixin, VersionedModel):  # pyli
         db_table = 'concepts'
         unique_together = ('mnemonic', 'version', 'parent')
         indexes = [
-            models.Index(name='concepts_updated_6490d8_idx', fields=['-updated_at'],
-                         condition=(Q(is_active=True) & Q(retired=False) & ~Q(public_access='None'))),
-            models.Index(name='concepts_ver_sort_idx', fields=['-updated_at'],
-                         condition=(Q(is_active=True) & Q(retired=False) & Q(is_latest_version=True) &
-                                    ~Q(public_access='None'))),
-            models.Index(name='concepts_public_conditional', fields=['public_access'],
-                         condition=(Q(is_active=True) & Q(retired=False) & Q(is_latest_version=True) &
-                                    ~Q(public_access='None'))),
-            models.Index(name='concepts_ver_public', fields=['public_access'],
-                         condition=(Q(is_active=True) & Q(retired=False) & ~Q(public_access='None'))),
-            models.Index(name='concepts_public_cond', fields=['parent_id'],
-                         condition=(Q(is_active=True) & Q(retired=False) & Q(is_latest_version=True) &
-                                    ~Q(public_access='None'))),
-            models.Index(name='concepts_all_for_count', fields=['is_active'],
-                         condition=(Q(is_active=True) & Q(retired=False) & Q(is_latest_version=True))),
-            models.Index(name='concepts_ver_for_count', fields=['is_active'],
-                         condition=(Q(is_active=True) & Q(retired=False))),
-            models.Index(name='concepts_all_for_count2', fields=['parent_id'],
-                         condition=(Q(is_active=True) & Q(retired=False) & Q(is_latest_version=True))),
-            models.Index(name='concepts_all_for_sort', fields=['-updated_at'],
-                         condition=(Q(is_active=True) & Q(retired=False) & Q(is_latest_version=True))),
-            models.Index(name='concepts_ver_for_sort', fields=['-updated_at'],
-                         condition=(Q(is_active=True) & Q(retired=False))),
-            models.Index(name='concepts_ver_updated_idx', fields=['-updated_at'],
-                         condition=(Q(is_active=True) & Q(retired=False) & Q(id=F('versioned_object_id')) &
-                                    ~Q(public_access='None'))),
-            models.Index(name='concepts_ver_public_cond', fields=['public_access'],
-                         condition=(Q(is_active=True) & Q(retired=False) & Q(id=F('versioned_object_id')) &
-                                    ~Q(public_access='None'))),
-            models.Index(name='concepts_ver_public_cond2', fields=['parent_id'],
-                         condition=(Q(is_active=True) & Q(retired=False) & Q(id=F('versioned_object_id')) &
-                                    ~Q(public_access='None'))),
-            models.Index(name='concepts_ver_all_for_count', fields=['is_active'],
-                         condition=(Q(is_active=True) & Q(retired=False) & Q(id=F('versioned_object_id')))),
-            models.Index(name='concepts_ver_all_for_count2', fields=['parent_id'],
-                         condition=(Q(is_active=True) & Q(retired=False) & Q(id=F('versioned_object_id')))),
-            models.Index(name='concepts_ver_all_for_sort', fields=['-updated_at'],
-                         condition=(Q(is_active=True) & Q(retired=False) & Q(id=F('versioned_object_id')))),
-            models.Index(name='concepts_ver_all_for_sort_2', fields=['-updated_at'],
-                         condition=(Q(is_active=True) & Q(retired=False))),
+            models.Index(
+                name='concepts_updated_6490d8_idx',
+                fields=['-updated_at', 'is_active', 'retired', 'public_access'],
+                condition=(Q(is_active=True) & Q(retired=False) & ~Q(public_access='None'))
+            ),
+            models.Index(
+                name='concepts_ver_sort_idx',
+                fields=['-updated_at', 'is_active', 'retired', 'is_latest_version', 'public_access'],
+                condition=(Q(is_active=True) & Q(retired=False) & Q(is_latest_version=True) & ~Q(public_access='None'))
+            ),
+            models.Index(
+                name='concepts_public_conditional',
+                fields=['public_access', 'is_active', 'retired', 'is_latest_version'],
+                condition=(Q(is_active=True) & Q(retired=False) & Q(is_latest_version=True) & ~Q(public_access='None'))
+            ),
+            models.Index(
+                name='concepts_ver_public',
+                fields=['is_active', 'retired', 'public_access'],
+                condition=(Q(is_active=True) & Q(retired=False) & ~Q(public_access='None'))
+            ),
+            models.Index(
+                name='concepts_all_for_count',
+                fields=['is_active', 'retired', 'is_latest_version'],
+                condition=(Q(is_active=True) & Q(retired=False) & Q(is_latest_version=True))
+            ),
+            models.Index(
+                name='concepts_ver_for_count',
+                fields=['is_active', 'retired'],
+                condition=(Q(is_active=True) & Q(retired=False))
+            ),
+            models.Index(
+                name='concepts_all_for_count2',
+                fields=['parent_id', 'is_active', 'retired', 'is_latest_version'],
+                condition=(Q(is_active=True) & Q(retired=False) & Q(is_latest_version=True))
+            ),
+            models.Index(
+                name='concepts_all_for_sort',
+                fields=['-updated_at', 'is_active', 'retired', 'is_latest_version'],
+                condition=(Q(is_active=True) & Q(retired=False) & Q(is_latest_version=True))
+            ),
+            models.Index(
+                name='concepts_ver_for_sort',
+                fields=['-updated_at', 'is_active', 'retired'],
+                condition=(Q(is_active=True) & Q(retired=False))
+            ),
+            models.Index(
+                name='concepts_ver_updated_idx',
+                fields=['-updated_at', 'retired', 'public_access', 'id', 'versioned_object_id'],
+                condition=(
+                        Q(is_active=True) & Q(retired=False) & Q(id=F('versioned_object_id')) & ~Q(public_access='None')
+                )
+            ),
+            models.Index(
+                name='concepts_ver_public_cond',
+                fields=['public_access', 'is_active', 'retired', 'id', 'versioned_object_id'],
+                condition=(
+                        Q(is_active=True) & Q(retired=False) & Q(id=F('versioned_object_id')) & ~Q(public_access='None')
+                )
+            ),
+            models.Index(
+                name='concepts_ver_all_for_count',
+                fields=['is_active', 'retired', 'id', 'versioned_object_id'],
+                condition=(Q(is_active=True) & Q(retired=False) & Q(id=F('versioned_object_id')))
+            ),
+            models.Index(
+                name='concepts_ver_all_for_sort',
+                fields=['-updated_at', 'is_active', 'retired', 'id', 'versioned_object_id'],
+                condition=(Q(is_active=True) & Q(retired=False) & Q(id=F('versioned_object_id')))
+            ),
+            models.Index(
+                name='concepts_ver_all_for_sort_2',
+                fields=['-updated_at', 'is_active', 'retired'],
+                condition=(Q(is_active=True) & Q(retired=False))
+            ),
             GinIndex(
                 name='concepts_uri_trgm_id_gin_idx',
                 fields=['uri', 'id'],
@@ -216,8 +228,6 @@ class Concept(ConceptValidationMixin, SourceChildMixin, VersionedModel):  # pyli
     external_id = models.TextField(null=True, blank=True)
     concept_class = models.TextField()
     datatype = models.TextField()
-    names_old = models.ManyToManyField(ConceptName, related_name='name_locales')
-    descriptions_old = models.ManyToManyField(ConceptName, related_name='description_locales')
     comment = models.TextField(null=True, blank=True)
     parent = models.ForeignKey('sources.Source', related_name='concepts_set', on_delete=models.CASCADE)
     sources = models.ManyToManyField('sources.Source', related_name='concepts')
@@ -615,6 +625,26 @@ class Concept(ConceptValidationMixin, SourceChildMixin, VersionedModel):  # pyli
     def is_existing_in_parent(self):
         return self.parent.concepts_set.filter(mnemonic__exact=self.mnemonic).exists()
 
+    def save_cloned(self):
+        names = self.cloned_names
+        descriptions = self.cloned_descriptions
+        parent = self.parent
+        self.is_latest_version = False
+        self.public_access = parent.public_access
+        self.name = self.mnemonic
+        self.save()
+        if self.id:
+            self.versioned_object_id = self.id
+            self.version = str(self.id)
+            self.save()
+            self.set_locales(names, ConceptName)
+            self.set_locales(descriptions, ConceptDescription)
+            initial_version = Concept.create_initial_version(self)
+            initial_version.set_locales(names, ConceptName)
+            initial_version.set_locales(descriptions, ConceptDescription)
+            initial_version.sources.set([parent])
+            self.sources.set([parent])
+
     @classmethod
     def persist_new(cls, data, user=None, create_initial_version=True, create_parent_version=True):  # pylint: disable=too-many-statements,too-many-branches
         names = data.pop('names', []) or []
@@ -978,11 +1008,40 @@ class Concept(ConceptValidationMixin, SourceChildMixin, VersionedModel):  # pyli
 
         return concepts_criteria, mappings_criteria
 
+    @staticmethod
+    def _get_cascade_mappings_criteria(map_types, exclude_map_types):
+        criteria = Q()
+        if map_types:
+            criteria &= Q(map_type__in=compact(map_types.split(',')))
+        if exclude_map_types:
+            criteria &= ~Q(map_type__in=compact(exclude_map_types.split(',')))
+        return criteria
+
+    @staticmethod
+    def _get_return_map_types_criteria(return_map_types, default_criteria):
+        if return_map_types in ['False', 'false', False, '0', 0]:  # no mappings to be returned
+            criteria = False
+        elif return_map_types:
+            criteria = Q() if return_map_types == ALL else Q(
+                map_type__in=compact(return_map_types.split(',')))
+        else:
+            criteria = default_criteria
+
+        return criteria
+
+    @staticmethod
+    def _get_equivalency_map_types_criteria(equivalency_map_types):
+        criteria = Q()
+        if equivalency_map_types:
+            criteria = Q(map_type__in=compact(equivalency_map_types.split(',')))
+        return criteria
+
     def cascade(  # pylint: disable=too-many-arguments,too-many-locals
             self, repo_version=None, source_mappings=True, source_to_concepts=True,
-            mappings_criteria=None, cascade_mappings=True, cascade_hierarchy=True, cascade_levels=ALL,
-            include_retired=False, reverse=False, return_map_types_criteria=None, omit_if_exists_in=None,
-            equivalency_map_types_criteria=None, max_results=1000
+            map_types=None, exclude_map_types=None, return_map_types=ALL, equivalency_map_types=None,
+            cascade_mappings=True, cascade_hierarchy=True, cascade_levels=ALL,
+            include_retired=False, reverse=False, omit_if_exists_in=None,
+            max_results=1000
     ):
         from core.mappings.models import Mapping
         result = dict(concepts=Concept.objects.filter(id=self.id), mappings=Mapping.objects.none())
@@ -992,6 +1051,17 @@ class Concept(ConceptValidationMixin, SourceChildMixin, VersionedModel):  # pyli
 
         if not repo_version:
             return result
+
+        mappings_criteria = self._get_cascade_mappings_criteria(map_types, exclude_map_types)
+        return_map_types_criteria = self._get_return_map_types_criteria(return_map_types, mappings_criteria)
+        equivalency_map_types_criteria = self._get_equivalency_map_types_criteria(equivalency_map_types)
+        omit_concepts_criteria, omit_mappings_criteria = self.__get_omit_from_version_criteria(
+            omit_if_exists_in, equivalency_map_types_criteria)
+
+        if omit_concepts_criteria and Concept.objects.filter(omit_concepts_criteria).filter(
+                versioned_object_id=self.versioned_object_id).exists():
+            return result
+
         if isinstance(repo_version, str):  # assumes its cascaded under source version, usage via collection-reference
             source_versions = self.sources.filter(version=repo_version)
             if source_versions.count() != 1:
@@ -1001,9 +1071,6 @@ class Concept(ConceptValidationMixin, SourceChildMixin, VersionedModel):  # pyli
         else:
             from core.collections.models import Collection
             is_collection = repo_version.__class__ == Collection
-
-        omit_concepts_criteria, omit_mappings_criteria = self.__get_omit_from_version_criteria(
-            omit_if_exists_in, equivalency_map_types_criteria)
 
         cascaded = []
 
@@ -1040,15 +1107,26 @@ class Concept(ConceptValidationMixin, SourceChildMixin, VersionedModel):  # pyli
         return result
 
     def cascade_as_hierarchy(  # pylint: disable=too-many-arguments,too-many-locals
-            self, repo_version=None, source_mappings=True, source_to_concepts=True, mappings_criteria=None,
+            self, repo_version=None, source_mappings=True, source_to_concepts=True,
+            map_types=None, exclude_map_types=None, return_map_types=ALL, equivalency_map_types=None,
             cascade_mappings=True, cascade_hierarchy=True, cascade_levels=ALL,
-            include_retired=False, reverse=False, return_map_types_criteria=None, omit_if_exists_in=None,
-            equivalency_map_types_criteria=None, _=None
+            include_retired=False, reverse=False, omit_if_exists_in=None,
+            _=None
     ):
         if cascade_levels == 0:
             return self
 
         if not repo_version:
+            return self
+
+        mappings_criteria = self._get_cascade_mappings_criteria(map_types, exclude_map_types)
+        return_map_types_criteria = self._get_return_map_types_criteria(return_map_types, mappings_criteria)
+        equivalency_map_types_criteria = self._get_equivalency_map_types_criteria(equivalency_map_types)
+        omit_concepts_criteria, omit_mappings_criteria = self.__get_omit_from_version_criteria(
+            omit_if_exists_in, equivalency_map_types_criteria)
+
+        if omit_concepts_criteria and Concept.objects.filter(omit_concepts_criteria).filter(
+                versioned_object_id=self.versioned_object_id).exists():
             return self
 
         if isinstance(repo_version, str):  # assumes its cascaded under source version, may never happen
@@ -1060,9 +1138,6 @@ class Concept(ConceptValidationMixin, SourceChildMixin, VersionedModel):  # pyli
         else:
             from core.collections.models import Collection
             is_collection = repo_version.__class__ == Collection
-
-        omit_concepts_criteria, omit_mappings_criteria = self.__get_omit_from_version_criteria(
-            omit_if_exists_in, equivalency_map_types_criteria)
 
         self.current_level = 0
         levels = {self.current_level: [self]}

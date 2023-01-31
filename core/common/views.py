@@ -15,7 +15,7 @@ from elasticsearch_dsl import Q
 from pydash import get
 from rest_framework import response, generics, status
 from rest_framework.generics import ListAPIView, RetrieveUpdateDestroyAPIView
-from rest_framework.permissions import AllowAny, IsAdminUser
+from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -866,32 +866,6 @@ class FeedbackView(APIView):  # pragma: no cover
         return Response(status=status.HTTP_200_OK)
 
 
-class ConceptDuplicateLocalesView(APIView):  # pragma: no cover
-    permission_classes = (IsAdminUser,)
-
-    @staticmethod
-    def get(request):
-        from core.common.tasks import delete_duplicate_locales
-        delete_duplicate_locales.delay(int(request.query_params.get('start', 0)))
-        return Response(status=status.HTTP_200_OK)
-
-
-class ConceptDormantLocalesView(APIView):  # pragma: no cover
-    permission_classes = (IsAdminUser, )
-
-    @staticmethod
-    def get(_, **kwargs):  # pylint: disable=unused-argument
-        from core.concepts.models import ConceptName
-        count = ConceptName.dormants()
-        return Response(count, status=status.HTTP_200_OK)
-
-    @staticmethod
-    def delete(_, **kwargs):  # pylint: disable=unused-argument
-        from core.common.tasks import delete_dormant_locales
-        delete_dormant_locales.delay()
-        return Response(status=status.HTTP_204_NO_CONTENT)
-
-
 class ConceptContainerExtraRetrieveUpdateDestroyView(RetrieveUpdateDestroyAPIView):
     def retrieve(self, request, *args, **kwargs):
         key = kwargs.get('extra')
@@ -912,7 +886,7 @@ class ConceptContainerExtraRetrieveUpdateDestroyView(RetrieveUpdateDestroyAPIVie
         instance.extras = get(instance, 'extras', {})
         instance.extras[key] = value
         instance.comment = f'Updated extras: {key}={value}.'
-        head = instance.get_head()
+        head = instance.head
         head.extras = get(head, 'extras', {})
         head.extras.update(instance.extras)
         instance.save()
@@ -926,11 +900,12 @@ class ConceptContainerExtraRetrieveUpdateDestroyView(RetrieveUpdateDestroyAPIVie
         if key in instance.extras:
             del instance.extras[key]
             instance.comment = f'Deleted extra {key}.'
-            head = instance.get_head()
-            head.extras = get(head, 'extras', {})
-            del head.extras[key]
             instance.save()
-            head.save()
+            if not instance.is_head:
+                head = instance.head
+                head.extras = get(head, 'extras', {})
+                del head.extras[key]
+                head.save()
             return Response(status=status.HTTP_204_NO_CONTENT)
 
         return Response(dict(detail=NOT_FOUND), status=status.HTTP_404_NOT_FOUND)
