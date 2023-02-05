@@ -1,15 +1,16 @@
 import logging
 
-from django.db.models import F
+from django.core.exceptions import ValidationError
+from rest_framework import status
+from rest_framework.response import Response
 
 from core.bundles.serializers import FHIRBundleSerializer
-from core.collections.models import Collection
+from core.code_systems.views import CodeSystemValidateCodeView
+from core.collections.models import Collection, default_expansion_parameters
 from core.collections.views import CollectionListView, CollectionRetrieveUpdateDestroyView, \
     CollectionVersionExpansionsView
 from core.common.constants import HEAD
 from core.common.fhir_helpers import translate_fhir_query
-from core.concepts.views import ConceptRetrieveUpdateDestroyView
-from core.parameters.serializers import ParametersSerializer
 from core.sources.models import Source
 from core.value_sets.serializers import ValueSetDetailSerializer, \
     ValueSetExpansionParametersSerializer, ValueSetExpansionSerializer
@@ -49,26 +50,18 @@ class ValueSetListView(CollectionListView):
         return self.serializer_class(obj)
 
 
-class ValueSetValidateCodeView(ConceptRetrieveUpdateDestroyView):
-    serializer_class = ParametersSerializer
-    parameters = {}
-
-    def process_parameters(self):
-        self.parameters = {}
-        for key, value in self.request.query_params.items():
-            self.parameters[key] = value
-
-    def is_container_version_specified(self):
-        return True
+class ValueSetValidateCodeView(CodeSystemValidateCodeView):
 
     def get_queryset(self):
         queryset = super().get_queryset()
-        self.process_parameters()
-        url = self.parameters.get('url')
-        code = self.parameters.get('code')
-        system = self.parameters.get('system')
-        display = self.parameters.get('display')
-        system_version = self.parameters.get('systemVersion')
+
+        parameters = self.get_parameters()
+
+        url = parameters.get('url')
+        code = parameters.get('code')
+        system = parameters.get('system')
+        display = parameters.get('display')
+        system_version = parameters.get('systemVersion')
 
         if url:
             collection = Collection.objects.filter(canonical_url=url).exclude(version=HEAD)\
@@ -97,35 +90,6 @@ class ValueSetValidateCodeView(ConceptRetrieveUpdateDestroyView):
 
         return queryset
 
-    def get_object(self, queryset=None):
-        queryset = self.get_queryset()
-        if not self.is_container_version_specified():
-            queryset = queryset.filter(id=F('versioned_object_id'))
-        instance = queryset.first()
-        if instance:
-            self.check_object_permissions(self.request, instance)
-
-        return instance
-
-    def get_serializer(self, instance=None):  # pylint: disable=arguments-differ
-        if instance:
-            return ParametersSerializer({'parameter': [
-                {
-                    'name': 'result',
-                    'valueBoolean': True
-                }
-            ]})
-        return ParametersSerializer({'parameter': [
-            {
-                'name': 'result',
-                'valueBoolean': False
-            },
-            {
-                'name': 'message',
-                'valueString': 'The code is incorrect.'
-            }
-        ]})
-
 
 class ValueSetRetrieveUpdateView(CollectionRetrieveUpdateDestroyView):
     serializer_class = ValueSetDetailSerializer
@@ -145,7 +109,34 @@ class ValueSetExpandView(CollectionVersionExpansionsView):
     sync = True
 
     def get_serializer_class(self):
-        return ValueSetExpansionParametersSerializer
+        if self.request.method == 'POST':
+            return ValueSetExpansionParametersSerializer
+
+        return ValueSetExpansionSerializer
 
     def get_response_serializer_class(self):
         return ValueSetExpansionSerializer
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        if self.request.method == 'GET':
+            parameters = ValueSetExpansionParametersSerializer.parse_query_params(self.request.query_params)
+            if not parameters.is_valid():
+                raise ValidationError(message=parameters.errors)
+
+            params = parameters.validated_data
+            params = params.get('parameters', {})
+            if not params:
+                qs = qs.filter(parameters=default_expansion_parameters()).order_by('-id')
+            else:
+                qs = qs.filter(parameters=params).order_by('-id')
+
+        return qs
+
+    def get(self, request, *args, **kwargs):
+        instance = self.get_queryset().first()
+        if instance:
+            serializer = self.get_serializer(instance)
+            return Response(serializer.data)
+
+        return Response(status=status.HTTP_404_NOT_FOUND)

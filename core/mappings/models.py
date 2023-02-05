@@ -58,6 +58,11 @@ class Mapping(MappingValidationMixin, SourceChildMixin, VersionedModel):
                 condition=(Q(is_active=True) & Q(retired=False) & Q(is_latest_version=True))
             ),
             models.Index(
+                name='mappings_all_for_count3',
+                fields=['parent_id', 'is_active', 'retired', 'id', 'versioned_object_id'],
+                condition=(Q(is_active=True) & Q(retired=False) & Q(id=F('versioned_object_id')))
+            ),
+            models.Index(
                 name='mappings_all_for_sort',
                 fields=['-updated_at', 'is_active', 'retired', 'is_latest_version'],
                 condition=(Q(is_active=True) & Q(retired=False) & Q(is_latest_version=True))
@@ -316,6 +321,13 @@ class Mapping(MappingValidationMixin, SourceChildMixin, VersionedModel):
         return mapping
 
     @classmethod
+    def build(cls, map_type, from_concept, to_concept, **kwargs):
+        return cls(
+            map_type=map_type, from_concept=from_concept, to_concept=to_concept,
+            to_concept_code=to_concept.mnemonic, from_concept_code=from_concept.mnemonic, **kwargs
+        )
+
+    @classmethod
     def create_initial_version(cls, mapping, **kwargs):
         initial_version = mapping.clone()
         initial_version.comment = mapping.comment
@@ -419,17 +431,27 @@ class Mapping(MappingValidationMixin, SourceChildMixin, VersionedModel):
         return cls.persist_clone(instance, user)
 
     def save_cloned(self):
-        parent = self.parent
-        self.is_latest_version = False
-        self.public_access = parent.public_access
-        self.save()
-        if self.id:
-            self.versioned_object_id = self.id
-            self.version = str(self.id)
+        try:
+            parent = self.parent
+            self.is_latest_version = False
+            self.public_access = parent.public_access
+            self.mnemonic = self.version = generate_temp_version()
+            self.errors = {}
+            self.full_clean()
             self.save()
-            initial_version = Mapping.create_initial_version(self)
-            initial_version.sources.set([parent])
-            self.sources.set([parent])
+            if self.id:
+                self.mnemonic = parent.mapping_mnemonic_next or str(self.id)
+                self.versioned_object_id = self.id
+                self.version = str(self.id)
+                self.external_id = parent.mapping_external_id_next
+                self.save()
+                initial_version = Mapping.create_initial_version(self)
+                initial_version.sources.set([parent])
+                self.sources.set([parent])
+        except ValidationError as ex:
+            self.errors.update(ex.message_dict)
+        except IntegrityError as ex:
+            self.errors.update(dict(__all__=ex.args))
 
     @classmethod
     def persist_new(cls, data, user):

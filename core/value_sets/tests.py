@@ -72,7 +72,8 @@ class ValueSetTest(OCLAPITestCase):
         self.assertEqual(
             resource['identifier'][0]['value'], f'/orgs/{self.org.mnemonic}/ValueSet/{self.collection.mnemonic}/')
         self.assertEqual(len(resource['compose']['include']), 1)
-        self.assertEqual(resource['compose']['include'][0]['system'], 'http://some/url')
+        self.assertEqual(resource['compose']['include'][0]['system'],
+                         f'/orgs/{self.org.mnemonic}/ValueSet/{self.org_source_v2.mnemonic}/')
         self.assertEqual(resource['compose']['include'][0]['version'], self.org_source_v2.version)
         self.assertEqual(len(resource['compose']['include'][0]['concept']), 2)
 
@@ -93,7 +94,8 @@ class ValueSetTest(OCLAPITestCase):
         self.assertEqual(
             resource['identifier'][0]['value'], f'/orgs/{self.org.mnemonic}/ValueSet/{self.collection.mnemonic}/')
         self.assertEqual(len(resource['compose']['include']), 1)
-        self.assertEqual(resource['compose']['include'][0]['system'], 'http://some/url')
+        self.assertEqual(resource['compose']['include'][0]['system'],
+                         f'/orgs/{self.org.mnemonic}/ValueSet/{self.org_source_v2.mnemonic}/')
         self.assertEqual(resource['compose']['include'][0]['version'], self.org_source_v2.version)
         self.assertEqual(len(resource['compose']['include'][0]['concept']), 2)
 
@@ -192,7 +194,7 @@ class ValueSetTest(OCLAPITestCase):
         self.assertEqual(len(resource['compose']['include']), 1)
         self.assertEqual(resource['compose']['include'][0]['system'], 'http://some/url')
         self.assertEqual(resource['compose']['include'][0]['version'], self.org_source_v2.version)
-        self.assertEqual(len(resource['compose']['include'][0]['concept']), 1)
+        self.assertIsNone(resource['compose']['include'][0].get('concept'))
 
     def test_create_with_filter_and_concept(self):
         ConceptDocument().update(self.org_source_v2.head.concepts_set.all())
@@ -218,8 +220,7 @@ class ValueSetTest(OCLAPITestCase):
                                     'op': '=',
                                     'value': self.concept_2.mnemonic
                                 }
-                            ],
-                            'concept': [],  # concept/code shouldn't be defined if filters are defined
+                            ]
                         }
                     ]
                 }
@@ -233,11 +234,10 @@ class ValueSetTest(OCLAPITestCase):
         self.assertEqual(len(resource['compose']['include']), 1)
         self.assertEqual(resource['compose']['include'][0]['system'], 'http://some/url')
         self.assertEqual(resource['compose']['include'][0]['version'], self.org_source_v2.version)
-        self.assertEqual(len(resource['compose']['include'][0]['concept']), 1)
-        self.assertEqual(resource['compose']['include'][0]['concept'][0]['code'], self.concept_2.mnemonic)
         self.assertEqual(len(resource['compose']['include'][0]['filter']), 1)
         self.assertEqual(resource['compose']['include'][0]['filter'][0]['property'], 'q')
         self.assertEqual(resource['compose']['include'][0]['filter'][0]['value'], self.concept_2.mnemonic)
+        self.assertIsNone(resource['compose']['include'][0].get('concept'))
 
     def test_can_update_empty(self):
         response = self.client.put(
@@ -300,12 +300,11 @@ class ValueSetTest(OCLAPITestCase):
         resource = response.data
         self.assertEqual(resource['version'], 'v2')
         self.assertEqual(resource['identifier'][0]['value'], f'/orgs/{self.org.mnemonic}/ValueSet/c1/')
-        self.assertEqual(len(resource['compose']['include']), 1)
-        self.assertEqual(resource['compose']['include'][0]['system'], 'http://some/url')
-        self.assertEqual(resource['compose']['include'][0]['version'], self.org_source_v2.version)
-        self.assertEqual(len(resource['compose']['include'][0]['concept']), 2)
-        self.assertEqual(resource['compose']['include'][0]['concept'][0]['code'], self.concept_1.mnemonic)
-        self.assertEqual(resource['compose']['include'][0]['concept'][1]['code'], self.concept_2.mnemonic)
+        self.assertEqual(len(resource['compose']['include']), 2)
+        self.assertEqual(resource['compose']['include'][1]['system'], 'http://some/url')
+        self.assertEqual(resource['compose']['include'][1]['version'], self.org_source_v2.version)
+        self.assertEqual(len(resource['compose']['include'][1]['concept']), 1)
+        self.assertEqual(resource['compose']['include'][1]['concept'][0]['code'], self.concept_2.mnemonic)
 
     def test_validate_code(self):
         self.collection.add_references([
@@ -368,6 +367,37 @@ class ValueSetTest(OCLAPITestCase):
             f'/fhir/ValueSet/$validate-code/'
             f'?url=http://c1.com&system=http://some/url&systemVersion={self.org_source_v2.version}'
             f'&code={self.concept_1.mnemonic}'
+        )
+
+        resource = response.data
+        self.assertEqual(resource['parameter'][0]['name'], 'result')
+        self.assertEqual(resource['parameter'][0]['valueBoolean'], True)
+
+    def test_validate_code_globally_via_post(self):
+        self.collection.add_references([
+            CollectionReference(
+                expression=self.concept_1.uri, collection=self.collection, code=self.concept_1.mnemonic,
+                system=self.concept_1.parent.uri, version='v2'
+            ),
+            CollectionReference(
+                expression=self.concept_2.uri, collection=self.collection, code=self.concept_2.mnemonic,
+                system=self.concept_2.parent.uri, version='v2'
+            ),
+        ])
+        self.collection_v1.seed_references()
+
+        response = self.client.post(
+            '/fhir/ValueSet/$validate-code/',
+            data={
+                'resourceType': 'Parameters',
+                'parameter': [
+                    {'name': 'url', 'valueUri': 'http://c1.com'},
+                    {'name': 'system', 'valueUri': 'http://some/url'},
+                    {'name': 'systemVersion', 'valueString': self.org_source_v2.version},
+                    {'name': 'code', 'valueCode': self.concept_1.mnemonic}
+                ]
+            },
+            format='json'
         )
 
         resource = response.data

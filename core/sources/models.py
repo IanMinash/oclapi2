@@ -10,7 +10,6 @@ from core.common.models import ConceptContainerModel
 from core.common.services import PostgresQL
 from core.common.validators import validate_non_negative
 from core.concepts.models import ConceptName, Concept
-from core.mappings.constants import SAME_AS
 from core.sources.constants import SOURCE_TYPE, SOURCE_VERSION_TYPE, HIERARCHY_ROOT_MUST_BELONG_TO_SAME_SOURCE, \
     HIERARCHY_MEANINGS, AUTO_ID_CHOICES, AUTO_ID_SEQUENTIAL, AUTO_ID_UUID
 
@@ -364,30 +363,46 @@ class Source(DirtyFieldsMixin, ConceptContainerModel):
         mappings = mappings.order_by('to_source_id').distinct('to_source_id')
         return Source.objects.filter(id__in=mappings.values_list('to_source_id', flat=True))
 
-    def clone_resources(self, user, concepts, mappings, **kwargs):  # pylint: disable=too-many-locals
+    def clone_resources(self, user, concepts, mappings, **kwargs):
         from core.mappings.models import Mapping
-        cloned_concepts, cloned_mappings = [], []
-        map_types = kwargs.get('map_types', '') or ''
+        added_concepts, added_mappings = [], []
+        equivalency_map_types = (kwargs.get('equivalency_map_types') or '').split(',')
+        _concepts_to_add_mappings_for = []
         for concept in concepts:
-            if not self.concepts_set.filter(mnemonic=concept.mnemonic).exists():
+            if not self.get_equivalent_concept(concept, equivalency_map_types):
                 cloned_concept = concept.versioned_object.clone()
-                cloned_concepts.append(cloned_concept)
-                cloned_mappings.append(
-                    Mapping(
-                        map_type=SAME_AS, from_concept=cloned_concept, to_concept=concept, parent=self,
-                        to_concept_code=concept.mnemonic, from_concept_code=cloned_concept.mnemonic
+                added_concepts += self.clone_concepts([cloned_concept], user, False)
+                if equivalency_map_types:
+                    added_mappings += self.clone_mappings(
+                        [Mapping.build(
+                            map_type=equivalency_map_types[0], from_concept=cloned_concept, to_concept=concept,
+                            parent=self
+                        )],
+                        user,
+                        False
                     )
-                )
-                for mapping in mappings.filter(from_concept__versioned_object_id=concept.versioned_object_id):
-                    original_to_concept = concepts.filter(id=mapping.to_concept_id).first()
-                    existing_to_concept = self.find_concept_by_mnemonic(
-                        original_to_concept.mnemonic) if original_to_concept else None
-                    cloned_mappings.append(mapping.clone(user, cloned_concept, existing_to_concept))
-                    if mapping.map_type in map_types and mapping.to_concept_id and not existing_to_concept:
-                        cloned_concepts.append(original_to_concept.clone())
-        added_concepts = self.clone_concepts(cloned_concepts, user)
-        added_mappings = self.clone_mappings(cloned_mappings, user)
+                _concepts_to_add_mappings_for.append([concept, cloned_concept])
+        for concept_pair in _concepts_to_add_mappings_for:
+            concept, cloned_concept = concept_pair
+            for mapping in mappings.filter(from_concept__versioned_object_id=concept.versioned_object_id):
+                existing_to_concept = self.get_equivalent_concept(mapping.to_concept, equivalency_map_types)
+                added_mappings += self.clone_mappings(
+                    [mapping.clone(user, cloned_concept, existing_to_concept)], user, False)
+
+        if added_concepts or added_mappings:
+            self.update_children_counts()
+
         return added_concepts, added_mappings
+
+    def get_equivalent_concept(self, concept, equivalency_map_type):
+        equivalent_mapping = self.get_equivalent_mapping(concept, equivalency_map_type)
+        return get(equivalent_mapping, 'from_concept')
+
+    def get_equivalent_mapping(self, concept, equivalency_map_type):
+        return self.mappings_set.filter(
+            map_type__in=equivalency_map_type, to_concept__versioned_object_id=concept.versioned_object_id,
+            from_concept__parent_id=self.id, retired=False, id=F('versioned_object_id')
+        ).first() if equivalency_map_type and concept else None
 
     def clone_with_cascade(self, concept_to_clone, user, **kwargs):
         if kwargs:
@@ -402,38 +417,40 @@ class Source(DirtyFieldsMixin, ConceptContainerModel):
             mappings = Mapping.objects.none()
         return self.clone_resources(user, concepts, mappings, **kwargs)
 
-    def clone_mappings(self, cloned_mappings, user):
-        update_count = False
+    def clone_mappings(self, cloned_mappings, user, update_count=True):
+        _update_count = False
         added = []
         for mapping in cloned_mappings:
             to_concept = get(mapping, 'to_concept')
             from_concept = get(mapping, 'from_concept')
-            if not from_concept.id:
+            if not get(from_concept, 'id'):
                 from_concept = self.find_concept_by_mnemonic(from_concept.mnemonic)
-            if not to_concept.id:
+            if not get(to_concept, 'id') and get(to_concept, 'mnemonic'):
                 to_concept = self.find_concept_by_mnemonic(to_concept.mnemonic)
-            mapping.from_concept_id = from_concept.id
-            mapping.to_concept_id = to_concept.id
+            mapping.from_concept_code = get(from_concept, 'mnemonic') or mapping.from_concept_code
+            mapping.from_concept_id = get(from_concept, 'id')
+            mapping.to_concept_id = get(to_concept, 'id')
+            mapping.to_concept_code = get(to_concept, 'mnemonic') or mapping.to_concept_code
             mapping.to_source_id = get(to_concept, 'parent_id')
             mapping.from_source_id = get(from_concept, 'parent_id')
             self._clone_resource(mapping, user)
             added.append(mapping)
-            if mapping.id:
-                update_count = True
-        if update_count:
+            if mapping.id and update_count:
+                _update_count = True
+        if _update_count:
             self.update_mappings_count()
         return added
 
-    def clone_concepts(self, cloned_concepts, user):
-        update_count = False
+    def clone_concepts(self, cloned_concepts, user, update_count=True):
+        _update_count = False
         added = []
         for concept in cloned_concepts:
             concept._parent_concepts = None  # pylint: disable=protected-access
             self._clone_resource(concept, user)
             added.append(concept)
-            if concept.id:
-                update_count = True
-        if update_count:
+            if concept.id and update_count:
+                _update_count = True
+        if _update_count:
             self.update_concepts_count()
         return added
 

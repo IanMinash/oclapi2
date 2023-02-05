@@ -179,6 +179,11 @@ class Concept(ConceptValidationMixin, SourceChildMixin, VersionedModel):  # pyli
                 condition=(Q(is_active=True) & Q(retired=False) & Q(is_latest_version=True))
             ),
             models.Index(
+                name='concepts_all_for_count3',
+                fields=['parent_id', 'is_active', 'retired', 'id', 'versioned_object_id'],
+                condition=(Q(is_active=True) & Q(retired=False) & Q(id=F('versioned_object_id')))
+            ),
+            models.Index(
                 name='concepts_all_for_sort',
                 fields=['-updated_at', 'is_active', 'retired', 'is_latest_version'],
                 condition=(Q(is_active=True) & Q(retired=False) & Q(is_latest_version=True))
@@ -626,24 +631,37 @@ class Concept(ConceptValidationMixin, SourceChildMixin, VersionedModel):  # pyli
         return self.parent.concepts_set.filter(mnemonic__exact=self.mnemonic).exists()
 
     def save_cloned(self):
-        names = self.cloned_names
-        descriptions = self.cloned_descriptions
-        parent = self.parent
-        self.is_latest_version = False
-        self.public_access = parent.public_access
-        self.name = self.mnemonic
-        self.save()
-        if self.id:
-            self.versioned_object_id = self.id
-            self.version = str(self.id)
+        try:
+            names = self.cloned_names
+            descriptions = self.cloned_descriptions
+            parent = self.parent
+            self.name = self.mnemonic = self.version = generate_temp_version()
+            self.is_latest_version = False
+            self.public_access = parent.public_access
+            self.errors = {}
             self.save()
-            self.set_locales(names, ConceptName)
-            self.set_locales(descriptions, ConceptDescription)
-            initial_version = Concept.create_initial_version(self)
-            initial_version.set_locales(names, ConceptName)
-            initial_version.set_locales(descriptions, ConceptDescription)
-            initial_version.sources.set([parent])
-            self.sources.set([parent])
+            if self.id:
+                self.name = self.mnemonic = parent.concept_mnemonic_next or str(self.id)
+                self.external_id = parent.concept_external_id_next
+                self.versioned_object_id = self.id
+                self.version = str(self.id)
+                self.save()
+                self.full_clean()
+                self.set_locales(names, ConceptName)
+                self.set_locales(descriptions, ConceptDescription)
+                initial_version = Concept.create_initial_version(self)
+                initial_version.set_locales(names, ConceptName)
+                initial_version.set_locales(descriptions, ConceptDescription)
+                initial_version.sources.set([parent])
+                self.sources.set([parent])
+        except ValidationError as ex:
+            if self.id:
+                self.delete()
+            self.errors.update(ex.message_dict)
+        except IntegrityError as ex:
+            if self.id:
+                self.delete()
+            self.errors.update(dict(__all__=ex.args))
 
     @classmethod
     def persist_new(cls, data, user=None, create_initial_version=True, create_parent_version=True):  # pylint: disable=too-many-statements,too-many-branches
@@ -671,8 +689,7 @@ class Concept(ConceptValidationMixin, SourceChildMixin, VersionedModel):  # pyli
 
             parent_resource = concept.parent
             if startswith_temp_version(concept.mnemonic):
-                concept.mnemonic = parent_resource.concept_mnemonic_next or str(concept.id)
-                concept.name = concept.mnemonic
+                concept.name = concept.mnemonic = parent_resource.concept_mnemonic_next or str(concept.id)
             if not concept.external_id:
                 concept.external_id = parent_resource.concept_external_id_next
             concept.is_latest_version = not create_initial_version
@@ -1093,12 +1110,12 @@ class Concept(ConceptValidationMixin, SourceChildMixin, VersionedModel):  # pyli
 
                             concepts_qs = res['concepts'].union(res['hierarchy_concepts']).union(result['concepts'])
                             result['concepts'] = Concept.objects.filter(
-                                id__in=concepts_qs.values_list('id', flat=True)
+                                id__in=list(concepts_qs.values_list('id', flat=True))
                             ).exclude(omit_concepts_criteria)
 
                             mappings_qs = res['mappings'].union(result['mappings'])
                             result['mappings'] = Mapping.objects.filter(
-                                id__in=mappings_qs.values_list('id', flat=True)
+                                id__in=list(mappings_qs.values_list('id', flat=True))
                             ).exclude(omit_mappings_criteria).order_by('map_type', 'sort_weight')
 
                         iterate(level if level == ALL else level - 1)
@@ -1113,10 +1130,10 @@ class Concept(ConceptValidationMixin, SourceChildMixin, VersionedModel):  # pyli
             include_retired=False, reverse=False, omit_if_exists_in=None,
             _=None
     ):
-        if cascade_levels == 0:
-            return self
+        from core.mappings.models import Mapping
+        self.cascaded_entries = dict(concepts=Concept.objects.none(), mappings=Mapping.objects.none())
 
-        if not repo_version:
+        if cascade_levels == 0 or not repo_version:
             return self
 
         mappings_criteria = self._get_cascade_mappings_criteria(map_types, exclude_map_types)
