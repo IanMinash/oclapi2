@@ -24,6 +24,17 @@ class SourceMinimalSerializer(ModelSerializer):
         fields = ('id', 'url')
 
 
+class SourceVersionMinimalSerializer(ModelSerializer):
+    id = CharField(source='version')
+    version_url = CharField(source='uri')
+    type = CharField(source='resource_version_type')
+    short_code = CharField(source='mnemonic')
+
+    class Meta:
+        model = Source
+        fields = ('id', 'version_url', 'type', 'short_code')
+
+
 class SourceListSerializer(ModelSerializer):
     type = CharField(source='resource_type')
     short_code = CharField(source='mnemonic')
@@ -227,8 +238,54 @@ class SourceSummaryDetailSerializer(SourceSummarySerializer):
     class Meta:
         model = Source
         fields = (
-            *SourceSummarySerializer.Meta.fields, 'id', 'uuid',
+            'id', 'uuid', *SourceSummarySerializer.Meta.fields
         )
+
+
+class SourceSummaryVerboseSerializer(ModelSerializer):
+    from_sources = SerializerMethodField()
+    to_sources = SerializerMethodField()
+    concepts = JSONField(source='concepts_distribution')
+    mappings = JSONField(source='mappings_distribution')
+    locales = JSONField(source='concept_names_distribution')
+    versions = JSONField(source='versions_distribution')
+    uuid = CharField(source='id')
+    id = CharField(source='mnemonic')
+
+    class Meta:
+        model = Source
+        fields = (
+            'id', 'uuid', 'concepts', 'mappings', 'locales', 'versions', 'from_sources', 'to_sources'
+        )
+
+    @staticmethod
+    def get_from_sources(obj):
+        return obj.get_sources_with_distribution(obj.from_sources, 'get_from_source_map_type_distribution')
+
+    @staticmethod
+    def get_to_sources(obj):
+        return obj.get_sources_with_distribution(obj.to_sources, 'get_to_source_map_type_distribution')
+
+
+class SourceSummaryFieldDistributionSerializer(ModelSerializer):
+    uuid = CharField(source='id')
+    id = CharField(source='mnemonic')
+    distribution = SerializerMethodField()
+
+    class Meta:
+        model = Source
+        fields = (
+            'id', 'uuid', 'distribution'
+        )
+
+    def get_distribution(self, obj):
+        result = {}
+        fields = (get(self.context, 'request.query_params.distribution') or '').split(',')
+        for field in fields:
+            func = get(obj, f"get_{field}_distribution")
+            if func:
+                result[field] = func()
+        return result
 
 
 class SourceVersionSummarySerializer(ModelSerializer):
@@ -246,6 +303,51 @@ class SourceVersionSummaryDetailSerializer(SourceVersionSummarySerializer):
         fields = (
             *SourceVersionSummarySerializer.Meta.fields, 'id', 'uuid',
         )
+
+
+class SourceVersionSummaryVerboseSerializer(ModelSerializer):
+    from_sources = SerializerMethodField()
+    to_sources = SerializerMethodField()
+    concepts = JSONField(source='concepts_distribution')
+    mappings = JSONField(source='mappings_distribution')
+    locales = JSONField(source='concept_names_distribution')
+    uuid = CharField(source='id')
+    id = CharField(source='version')
+
+    class Meta:
+        model = Source
+        fields = (
+            'id', 'uuid', 'concepts', 'mappings', 'locales', 'from_sources', 'to_sources'
+        )
+
+    @staticmethod
+    def get_from_sources(obj):
+        return obj.get_sources_with_distribution(obj.from_sources, 'get_from_source_map_type_distribution')
+
+    @staticmethod
+    def get_to_sources(obj):
+        return obj.get_sources_with_distribution(obj.to_sources, 'get_to_source_map_type_distribution')
+
+
+class SourceVersionSummaryFieldDistributionSerializer(ModelSerializer):
+    uuid = CharField(source='id')
+    id = CharField(source='version')
+    distribution = SerializerMethodField()
+
+    class Meta:
+        model = Source
+        fields = (
+            'id', 'uuid', 'distribution'
+        )
+
+    def get_distribution(self, obj):
+        result = {}
+        fields = (get(self.context, 'request.query_params.distribution') or '').split(',')
+        for field in fields:
+            func = get(obj, f"get_{field}_distribution")
+            if func:
+                result[field] = func()
+        return result
 
 
 class SourceDetailSerializer(SourceCreateOrUpdateSerializer):

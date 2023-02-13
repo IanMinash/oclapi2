@@ -3,7 +3,7 @@ import uuid
 from dirtyfields import DirtyFieldsMixin
 from django.core.exceptions import ValidationError
 from django.db import models
-from django.db.models import UniqueConstraint, F, Max
+from django.db.models import UniqueConstraint, F, Max, Count
 from pydash import compact, get
 
 from core.common.models import ConceptContainerModel
@@ -431,8 +431,8 @@ class Source(DirtyFieldsMixin, ConceptContainerModel):
             mapping.from_concept_id = get(from_concept, 'id')
             mapping.to_concept_id = get(to_concept, 'id')
             mapping.to_concept_code = get(to_concept, 'mnemonic') or mapping.to_concept_code
-            mapping.to_source_id = get(to_concept, 'parent_id')
-            mapping.from_source_id = get(from_concept, 'parent_id')
+            mapping.to_source_id = get(to_concept, 'parent_id') or mapping.to_source_id
+            mapping.from_source_id = get(from_concept, 'parent_id') or mapping.from_source_id
             self._clone_resource(mapping, user)
             added.append(mapping)
             if mapping.id and update_count:
@@ -470,3 +470,137 @@ class Source(DirtyFieldsMixin, ConceptContainerModel):
                     id=F('versioned_object_id')
                 ) or queryset.filter(is_latest_version=True) or queryset.filter(retired=False) or queryset
         ).first()
+
+    def _get_map_type_distribution(self, filters, concept_field):
+        _result = dict(total=0, retired=0, active=0, concepts=0)
+        result = dict(**_result, map_types=[])
+
+        queryset = self.get_mappings_queryset().filter(**filters)
+        queryset = queryset.values(
+            'map_type').annotate(
+            total=Count('id')).annotate(
+            retired=Count('id', filter=models.Q(retired=True))).annotate(
+            concepts=Count(concept_field, distinct=True))
+        for info in queryset.values('map_type', 'total', 'retired', 'concepts').order_by('-total'):
+            active = info['total'] - info['retired']
+            result['total'] += info['total']
+            result['retired'] += info['retired']
+            result['active'] += active
+            result['concepts'] += info['concepts']
+            result['map_types'].append({
+                'map_type': info['map_type'],
+                'concepts': info['concepts'],
+                'total': info['total'],
+                'retired': info['retired'],
+                'active': active
+            })
+        return result
+
+    def get_from_source_map_type_distribution(self, from_source):
+        return self._get_map_type_distribution(dict(from_source_id=from_source.id), 'to_concept__versioned_object_id')
+
+    def get_to_source_map_type_distribution(self, to_source):
+        return self._get_map_type_distribution(dict(to_source_id=to_source.id), 'from_concept__versioned_object_id')
+
+    @property
+    def from_sources(self):
+        return Source.objects.filter(id__in=self.referenced_from_sources().values_list('id', flat=True))
+
+    @property
+    def to_sources(self):
+        return Source.objects.filter(id__in=self.referenced_to_sources().values_list('id', flat=True))
+
+    def get_sources_with_distribution(self, sources, distribution_method):
+        from core.sources.serializers import SourceVersionMinimalSerializer
+        result = [
+            {
+                **SourceVersionMinimalSerializer(source).data,
+                'distribution': get(self, distribution_method)(source)
+            } for source in sources
+        ]
+        return sorted(result, key=lambda _source: get(_source, 'distribution.total'), reverse=True)
+
+    def referenced_from_sources(self):
+        return Source.objects.exclude(
+            organization_id=self.organization_id, user_id=self.user_id,
+            mnemonic=self.mnemonic
+        ).filter(id__in=self.get_mappings_queryset().values_list('from_source_id', flat=True))
+
+    def referenced_to_sources(self):
+        return Source.objects.exclude(
+            organization_id=self.organization_id, user_id=self.user_id,
+            mnemonic=self.mnemonic
+        ).filter(id__in=self.get_mappings_queryset().values_list('to_source_id', flat=True))
+
+    @property
+    def map_types_count(self):
+        return self.get_active_mappings().aggregate(count=Count('map_type', distinct=True))['count']
+
+    @property
+    def concept_class_count(self):
+        return self.get_active_concepts().aggregate(count=Count('concept_class', distinct=True))['count']
+
+    @property
+    def datatype_count(self):
+        return self.get_active_concepts().aggregate(count=Count('datatype', distinct=True))['count']
+
+    @property
+    def retired_concepts_count(self):
+        return self.get_concepts_queryset().filter(retired=True).count()
+
+    @property
+    def retired_mappings_count(self):
+        return self.get_mappings_queryset().filter(retired=True).count()
+
+    @property
+    def concepts_distribution(self):
+        return dict(
+            active=self.active_concepts,
+            retired=self.retired_concepts_count,
+            concept_class=self.concept_class_count,
+            datatype=self.datatype_count
+        )
+
+    @property
+    def mappings_distribution(self):
+        return dict(
+            active=self.active_mappings,
+            retired=self.retired_mappings_count,
+            map_types=self.map_types_count
+        )
+
+    @property
+    def versions_distribution(self):
+        return dict(
+            total=self.num_versions,
+            released=self.released_versions_count,
+        )
+
+    def get_name_locales_queryset(self):
+        return ConceptName.objects.filter(concept__in=self.get_active_concepts())
+
+    @property
+    def concept_names_distribution(self):
+        locales = self.get_name_locales_queryset()
+        locales_total = locales.distinct('locale').count()
+        names_total = locales.distinct('type').count()
+        return dict(locales=locales_total, names=names_total)
+
+    def get_name_locale_distribution(self):
+        return self._get_distribution(self.get_name_locales_queryset(), 'locale')
+
+    def get_name_type_distribution(self):
+        return self._get_distribution(self.get_name_locales_queryset(), 'type')
+
+    def get_concept_class_distribution(self):
+        return self._get_distribution(self.get_active_concepts(), 'concept_class')
+
+    def get_datatype_distribution(self):
+        return self._get_distribution(self.get_active_concepts(), 'datatype')
+
+    def get_map_type_distribution(self):
+        return self._get_distribution(self.get_active_mappings(), 'map_type')
+
+    @staticmethod
+    def _get_distribution(queryset, field):
+        return list(queryset.values(field).annotate(count=Count('id')).values(field, 'count').order_by('-count'))

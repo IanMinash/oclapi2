@@ -10,7 +10,6 @@ from django.shortcuts import get_object_or_404
 from drf_yasg.utils import swagger_auto_schema
 from pydash import get
 from rest_framework import status
-from rest_framework.exceptions import PermissionDenied
 from rest_framework.generics import (
     RetrieveAPIView, ListAPIView, UpdateAPIView, CreateAPIView)
 from rest_framework.response import Response
@@ -31,12 +30,15 @@ from core.common.utils import parse_boolean_query_param, compact_dict_by_values,
 from core.common.views import BaseAPIView, BaseLogoView, ConceptContainerExtraRetrieveUpdateDestroyView
 from core.sources.constants import DELETE_FAILURE, DELETE_SUCCESS, VERSION_ALREADY_EXISTS
 from core.sources.documents import SourceDocument
+from core.sources.mixins import SummaryMixin
 from core.sources.models import Source
 from core.sources.search import SourceSearch
 from core.sources.serializers import (
     SourceDetailSerializer, SourceListSerializer, SourceCreateSerializer, SourceVersionDetailSerializer,
     SourceVersionListSerializer, SourceVersionExportSerializer, SourceSummaryDetailSerializer,
-    SourceVersionSummaryDetailSerializer, SourceMinimalSerializer)
+    SourceVersionSummaryDetailSerializer, SourceMinimalSerializer, SourceSummaryVerboseSerializer,
+    SourceVersionSummaryVerboseSerializer, SourceSummaryFieldDistributionSerializer,
+    SourceVersionSummaryFieldDistributionSerializer)
 
 logger = logging.getLogger('oclapi')
 
@@ -496,38 +498,28 @@ class SourceHierarchyView(SourceBaseView, RetrieveAPIView):
         return Response(instance.hierarchy(offset=offset, limit=limit))
 
 
-class SourceSummaryView(SourceBaseView, RetrieveAPIView):
+class SourceSummaryView(SourceBaseView, RetrieveAPIView, SummaryMixin):
     serializer_class = SourceSummaryDetailSerializer
     permission_classes = (CanViewConceptDictionary,)
 
-    def get_object(self, queryset=None):
-        instance = get_object_or_404(self.get_queryset())
-        self.check_object_permissions(self.request, instance)
-        return instance
-
-    def put(self, request, **kwargs):  # pylint: disable=unused-argument
-        instance = self.get_object()
-        if instance.has_edit_access(request.user):
-            instance.update_children_counts()
-            return Response(status=status.HTTP_202_ACCEPTED)
-        raise PermissionDenied()
+    def get_serializer_class(self):
+        if self.is_verbose():
+            if self.request.query_params.get('distribution'):
+                return SourceSummaryFieldDistributionSerializer
+            return SourceSummaryVerboseSerializer
+        return SourceSummaryDetailSerializer
 
 
-class SourceVersionSummaryView(SourceVersionBaseView, RetrieveAPIView):
+class SourceVersionSummaryView(SourceVersionBaseView, RetrieveAPIView, SummaryMixin):
     serializer_class = SourceVersionSummaryDetailSerializer
     permission_classes = (CanViewConceptDictionary,)
 
-    def get_object(self, queryset=None):
-        instance = get_object_or_404(self.get_queryset())
-        self.check_object_permissions(self.request, instance)
-        return instance
-
-    def put(self, request, **kwargs):  # pylint: disable=unused-argument
-        instance = self.get_object()
-        if instance.has_edit_access(request.user):
-            instance.update_children_counts()
-            return Response(status=status.HTTP_202_ACCEPTED)
-        raise PermissionDenied()
+    def get_serializer_class(self):
+        if self.is_verbose():
+            if self.request.query_params.get('distribution'):
+                return SourceVersionSummaryFieldDistributionSerializer
+            return SourceVersionSummaryVerboseSerializer
+        return SourceVersionSummaryDetailSerializer
 
 
 class SourceLatestVersionSummaryView(SourceVersionBaseView, RetrieveAPIView, UpdateAPIView):
