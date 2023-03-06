@@ -498,7 +498,7 @@ class SourceHierarchyView(SourceBaseView, RetrieveAPIView):
         return Response(instance.hierarchy(offset=offset, limit=limit))
 
 
-class SourceSummaryView(SourceBaseView, RetrieveAPIView, SummaryMixin):
+class SourceSummaryView(SummaryMixin, SourceBaseView, RetrieveAPIView):
     serializer_class = SourceSummaryDetailSerializer
     permission_classes = (CanViewConceptDictionary,)
 
@@ -510,7 +510,7 @@ class SourceSummaryView(SourceBaseView, RetrieveAPIView, SummaryMixin):
         return SourceSummaryDetailSerializer
 
 
-class SourceVersionSummaryView(SourceVersionBaseView, RetrieveAPIView, SummaryMixin):
+class SourceVersionSummaryView(SummaryMixin, SourceVersionBaseView, RetrieveAPIView):
     serializer_class = SourceVersionSummaryDetailSerializer
     permission_classes = (CanViewConceptDictionary,)
 
@@ -525,6 +525,13 @@ class SourceVersionSummaryView(SourceVersionBaseView, RetrieveAPIView, SummaryMi
 class SourceLatestVersionSummaryView(SourceVersionBaseView, RetrieveAPIView, UpdateAPIView):
     serializer_class = SourceVersionSummaryDetailSerializer
     permission_classes = (CanViewConceptDictionary,)
+
+    def get_serializer_class(self):
+        if self.is_verbose():
+            if self.request.query_params.get('distribution'):
+                return SourceVersionSummaryFieldDistributionSerializer
+            return SourceVersionSummaryVerboseSerializer
+        return SourceVersionSummaryDetailSerializer
 
     def get_object(self, queryset=None):
         obj = self.get_queryset().first()

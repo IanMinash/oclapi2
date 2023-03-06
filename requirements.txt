@@ -1,10 +1,10 @@
-Django==4.1.6
+Django==4.1.7
 psycopg2==2.9.5
 gunicorn==20.1.0 #production server
 whitenoise==6.2.0 #serving swagger static files
 djangorestframework==3.14.0
 pylint==2.15.0
-pydash==5.1.1
+pydash==6.0.2
 django-cors-headers==3.13.0
 pyyaml==6.0
 colour_runner==0.1.1
@@ -20,7 +20,7 @@ git+https://github.com/snyaggarwal/flower # use until https://github.com/mher/fl
 redis==4.3.4
 kombu==5.2.4
 django-elasticsearch-dsl==7.2.2
-drf-yasg==1.21.4
+drf-yasg==1.21.5
 git+https://github.com/snyaggarwal/django-queryset-csv
 git+https://github.com/OpenConceptLab/ocldev
 coverage==6.5.0
@@ -28,10 +28,10 @@ tblib==1.7.0
 django-ordered-model==3.6
 django-health-check>=3.16.2
 markdown==3.4.1
-mock==4.0.3
+mock==5.0.1
 django-request-logging==0.7.5
 django-cid==2.3
-django-dirtyfields==1.9.0
+django-dirtyfields==1.9.1
 jsonpath-ng==1.5.3
 mozilla-django-oidc==2.0.0
 django-celery-beat==2.4.0

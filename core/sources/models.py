@@ -180,6 +180,8 @@ class Source(DirtyFieldsMixin, ConceptContainerModel):
         return hierarchy_root.parent_id == self.head.id
 
     def clean(self):
+        self.hierarchy_meaning = self.hierarchy_meaning or None
+
         super().clean()
         if self.hierarchy_root_id and not self.is_hierarchy_root_belonging_to_self():
             raise ValidationError({'hierarchy_root': [HIERARCHY_ROOT_MUST_BELONG_TO_SAME_SOURCE]})
@@ -408,7 +410,7 @@ class Source(DirtyFieldsMixin, ConceptContainerModel):
         if kwargs:
             kwargs.pop('view', None)
             kwargs['repo_version'] = kwargs.get('repo_version') or concept_to_clone.parent
-            result = concept_to_clone.cascade(**kwargs, omit_if_exists_in=self.uri)
+            result = concept_to_clone.cascade(**kwargs, omit_if_exists_in=self.uri, include_self=False)
             concepts = result['concepts']
             mappings = result['mappings']
         else:
@@ -532,75 +534,14 @@ class Source(DirtyFieldsMixin, ConceptContainerModel):
             mnemonic=self.mnemonic
         ).filter(id__in=self.get_mappings_queryset().values_list('to_source_id', flat=True))
 
-    @property
-    def map_types_count(self):
-        return self.get_active_mappings().aggregate(count=Count('map_type', distinct=True))['count']
+    def get_concepts_queryset(self):
+        if self.is_head:
+            return self.concepts_set.filter(id=F('versioned_object_id'))
 
-    @property
-    def concept_class_count(self):
-        return self.get_active_concepts().aggregate(count=Count('concept_class', distinct=True))['count']
+        return self.concepts.filter()
 
-    @property
-    def datatype_count(self):
-        return self.get_active_concepts().aggregate(count=Count('datatype', distinct=True))['count']
+    def get_mappings_queryset(self):
+        if self.is_head:
+            return self.mappings_set.filter(id=F('versioned_object_id'))
 
-    @property
-    def retired_concepts_count(self):
-        return self.get_concepts_queryset().filter(retired=True).count()
-
-    @property
-    def retired_mappings_count(self):
-        return self.get_mappings_queryset().filter(retired=True).count()
-
-    @property
-    def concepts_distribution(self):
-        return dict(
-            active=self.active_concepts,
-            retired=self.retired_concepts_count,
-            concept_class=self.concept_class_count,
-            datatype=self.datatype_count
-        )
-
-    @property
-    def mappings_distribution(self):
-        return dict(
-            active=self.active_mappings,
-            retired=self.retired_mappings_count,
-            map_types=self.map_types_count
-        )
-
-    @property
-    def versions_distribution(self):
-        return dict(
-            total=self.num_versions,
-            released=self.released_versions_count,
-        )
-
-    def get_name_locales_queryset(self):
-        return ConceptName.objects.filter(concept__in=self.get_active_concepts())
-
-    @property
-    def concept_names_distribution(self):
-        locales = self.get_name_locales_queryset()
-        locales_total = locales.distinct('locale').count()
-        names_total = locales.distinct('type').count()
-        return dict(locales=locales_total, names=names_total)
-
-    def get_name_locale_distribution(self):
-        return self._get_distribution(self.get_name_locales_queryset(), 'locale')
-
-    def get_name_type_distribution(self):
-        return self._get_distribution(self.get_name_locales_queryset(), 'type')
-
-    def get_concept_class_distribution(self):
-        return self._get_distribution(self.get_active_concepts(), 'concept_class')
-
-    def get_datatype_distribution(self):
-        return self._get_distribution(self.get_active_concepts(), 'datatype')
-
-    def get_map_type_distribution(self):
-        return self._get_distribution(self.get_active_mappings(), 'map_type')
-
-    @staticmethod
-    def _get_distribution(queryset, field):
-        return list(queryset.values(field).annotate(count=Count('id')).values(field, 'count').order_by('-count'))
+        return self.mappings.filter()

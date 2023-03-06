@@ -4,8 +4,8 @@ from django.contrib.contenttypes.fields import GenericRelation
 from django.contrib.postgres.fields import ArrayField
 from django.core.exceptions import ValidationError
 from django.core.validators import RegexValidator
-from django.db import models, IntegrityError
-from django.db.models import Value, Q
+from django.db import models, IntegrityError, transaction
+from django.db.models import Value, Q, Count
 from django.db.models.expressions import CombinedExpression, F
 from django.utils import timezone
 from django.utils.functional import cached_property
@@ -23,7 +23,8 @@ from .constants import (
     ACCESS_TYPE_CHOICES, DEFAULT_ACCESS_TYPE, NAMESPACE_REGEX,
     ACCESS_TYPE_VIEW, ACCESS_TYPE_EDIT, SUPER_ADMIN_USER_ID,
     HEAD, PERSIST_NEW_ERROR_MESSAGE, SOURCE_PARENT_CANNOT_BE_NONE, PARENT_RESOURCE_CANNOT_BE_NONE,
-    CREATOR_CANNOT_BE_NONE, CANNOT_DELETE_ONLY_VERSION, CUSTOM_VALIDATION_SCHEMA_OPENMRS)
+    CREATOR_CANNOT_BE_NONE, CANNOT_DELETE_ONLY_VERSION, OPENMRS_VALIDATION_SCHEMA, VALIDATION_SCHEMAS,
+    DEFAULT_VALIDATION_SCHEMA)
 from .fields import URIField
 from .tasks import handle_save, handle_m2m_changed, seed_children_to_new_version, update_validation_schema, \
     update_source_active_concepts_count, update_source_active_mappings_count
@@ -183,6 +184,7 @@ class BaseModel(models.Model):
             limit += batch_size
 
     @staticmethod
+    @transaction.atomic
     def batch_delete(queryset):
         for batch in queryset.iterator(chunk_size=1000):
             batch.delete()
@@ -316,6 +318,9 @@ class VersionedModel(BaseResourceModel):
     def get_latest_version(self):
         return self.active_versions.filter(is_latest_version=True).order_by('-created_at').first()
 
+    def get_last_version(self):
+        return self.active_versions.order_by('-created_at').first()
+
     def get_latest_released_version(self):
         return self.released_versions.order_by('-created_at').first()
 
@@ -360,6 +365,9 @@ class ConceptContainerModel(VersionedModel):
     meta = models.JSONField(null=True, blank=True)
     active_concepts = models.IntegerField(null=True, blank=True, default=None)
     active_mappings = models.IntegerField(null=True, blank=True, default=None)
+    custom_validation_schema = models.CharField(
+        choices=VALIDATION_SCHEMAS, default=DEFAULT_VALIDATION_SCHEMA, max_length=100
+    )
 
     class Meta:
         abstract = True
@@ -380,7 +388,7 @@ class ConceptContainerModel(VersionedModel):
 
     @property
     def is_openmrs_schema(self):
-        return self.custom_validation_schema == CUSTOM_VALIDATION_SCHEMA_OPENMRS
+        return self.custom_validation_schema == OPENMRS_VALIDATION_SCHEMA
 
     def update_children_counts(self, sync=False):
         self.update_concepts_count(sync)
@@ -505,18 +513,6 @@ class ConceptContainerModel(VersionedModel):
 
     def get_active_mappings(self):
         return self.get_mappings_queryset().filter(is_active=True, retired=False)
-
-    def get_concepts_queryset(self):
-        if self.is_head:
-            return self.concepts_set.filter(id=F('versioned_object_id'))
-
-        return self.concepts.filter()
-
-    def get_mappings_queryset(self):
-        if self.is_head:
-            return self.mappings_set.filter(id=F('versioned_object_id'))
-
-        return self.mappings.filter()
 
     def has_parent_edit_access(self, user):
         if user.is_staff:
@@ -850,10 +846,87 @@ class ConceptContainerModel(VersionedModel):
         return instance
 
     def clean(self):
+        if not self.custom_validation_schema:
+            self.custom_validation_schema = DEFAULT_VALIDATION_SCHEMA
+
         super().clean()
 
         if self.released and not self.revision_date:
             self.revision_date = timezone.now()
+
+    @property
+    def map_types_count(self):
+        return self.get_active_mappings().aggregate(count=Count('map_type', distinct=True))['count']
+
+    @property
+    def concept_class_count(self):
+        return self.get_active_concepts().aggregate(count=Count('concept_class', distinct=True))['count']
+
+    @property
+    def datatype_count(self):
+        return self.get_active_concepts().aggregate(count=Count('datatype', distinct=True))['count']
+
+    @property
+    def retired_concepts_count(self):
+        return self.get_concepts_queryset().filter(retired=True).count()
+
+    @property
+    def retired_mappings_count(self):
+        return self.get_mappings_queryset().filter(retired=True).count()
+
+    @property
+    def concepts_distribution(self):
+        return dict(
+            active=self.active_concepts,
+            retired=self.retired_concepts_count,
+            concept_class=self.concept_class_count,
+            datatype=self.datatype_count
+        )
+
+    @property
+    def mappings_distribution(self):
+        return dict(
+            active=self.active_mappings,
+            retired=self.retired_mappings_count,
+            map_types=self.map_types_count
+        )
+
+    @property
+    def versions_distribution(self):
+        return dict(
+            total=self.num_versions,
+            released=self.released_versions_count,
+        )
+
+    def get_name_locales_queryset(self):
+        from core.concepts.models import ConceptName
+        return ConceptName.objects.filter(concept__in=self.get_active_concepts())
+
+    @property
+    def concept_names_distribution(self):
+        locales = self.get_name_locales_queryset()
+        locales_total = locales.distinct('locale').count()
+        names_total = locales.distinct('type').count()
+        return dict(locales=locales_total, names=names_total)
+
+    def get_name_locale_distribution(self):
+        return self._get_distribution(self.get_name_locales_queryset(), 'locale')
+
+    def get_name_type_distribution(self):
+        return self._get_distribution(self.get_name_locales_queryset(), 'type')
+
+    def get_concept_class_distribution(self):
+        return self._get_distribution(self.get_active_concepts(), 'concept_class')
+
+    def get_datatype_distribution(self):
+        return self._get_distribution(self.get_active_concepts(), 'datatype')
+
+    def get_map_type_distribution(self):
+        return self._get_distribution(self.get_active_mappings(), 'map_type')
+
+    @staticmethod
+    def _get_distribution(queryset, field):
+        return list(queryset.values(field).annotate(count=Count('id')).values(field, 'count').order_by('-count'))
 
 
 class CelerySignalProcessor(RealTimeSignalProcessor):

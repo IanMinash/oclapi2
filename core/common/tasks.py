@@ -602,72 +602,6 @@ def delete_s3_objects(path):
 
 
 @app.task(ignore_result=True)
-def link_references_to_resources(reference_ids):  # pragma: no cover
-    from core.collections.models import CollectionReference
-    for reference in CollectionReference.objects.filter(id__in=reference_ids):
-        logger.info('Linking Reference %s', reference.uri)
-        reference.link_resources()
-
-
-@app.task(ignore_result=True)
-def link_all_references_to_resources():  # pragma: no cover
-    from core.collections.models import CollectionReference
-    queryset = CollectionReference.objects.filter(concepts__isnull=True, mappings__isnull=True)
-    total = queryset.count()
-    logger.info('Need to link %d references', total)
-    count = 1
-    for reference in queryset:
-        logger.info('(%d/%d) Linking Reference %s', count, total, reference.uri)
-        count += 1
-        reference.link_resources()
-
-
-@app.task(ignore_result=True)
-def link_expansions_repo_versions():  # pragma: no cover
-    from core.collections.models import Expansion
-    expansions = Expansion.objects.filter()
-    total = expansions.count()
-    logger.info('Total Expansions %d', total)
-    count = 1
-    for expansion in expansions:
-        if (
-                expansion.concepts.exists() or expansion.mappings.exists()
-        ) and (
-                not expansion.resolved_source_versions.exists() and not expansion.resolved_collection_versions.exists()
-        ):
-            logger.info('(%d/%d) Linking Repo Version %s', count, total, expansion.uri)
-            expansion.link_repo_versions()
-        else:
-            logger.info('(%d/%d) Skipping already Linked %s', count, total, expansion.uri)
-        count += 1
-
-
-@app.task(ignore_result=True)
-def reference_old_to_new_structure():  # pragma: no cover
-    from core.collections.parsers import CollectionReferenceExpressionStringParser
-    from core.collections.models import CollectionReference
-
-    queryset = CollectionReference.objects.filter(expression__isnull=False, system__isnull=True, valueset__isnull=True)
-    total = queryset.count()
-    logger.info('Need to migrate %d references', total)
-    count = 1
-    for reference in queryset:
-        logger.info('(%d/%d) Migrating %s', count, total, reference.uri)
-        count += 1
-        parser = CollectionReferenceExpressionStringParser(expression=reference.expression)
-        parser.parse()
-        ref_struct = parser.to_reference_structure()[0]
-        reference.reference_type = ref_struct['reference_type'] or 'concepts'
-        reference.system = ref_struct['system']
-        reference.version = ref_struct['version']
-        reference.code = ref_struct['code']
-        reference.resource_version = ref_struct['resource_version']
-        reference.valueset = ref_struct['valueset']
-        reference.filter = ref_struct['filter']
-        reference.save()
-
-
-@app.task(ignore_result=True)
 def beat_healthcheck():  # pragma: no cover
     from core.common.services import RedisService
     redis_service = RedisService()
@@ -686,11 +620,41 @@ def monthly_usage_report():  # pragma: no cover
         verbose=True, start=three_months_from_now, end=now, current_month_end=now, current_month_start=last_month)
     report.prepare()
     html_body = render_to_string('monthly_usage_report_for_mail.html', report.get_result_for_email())
+    FORMAT = '%Y-%m-%d'
+    start = report.start
+    end = report.end
     mail = EmailMessage(
-        subject=f"{settings.ENV.upper()} Monthly usage report: {report.start} to {report.end}",
+        subject=f"{settings.ENV.upper()} Monthly usage report: {start.strftime(FORMAT)} to {end.strftime(FORMAT)}",
         body=html_body,
         to=[settings.REPORTS_EMAIL]
     )
     mail.content_subtype = "html"
     res = mail.send()
     return res
+
+
+@app.task(ignore_result=True)
+def post_import_update_resource_counts():
+    from core.sources.models import Source
+    from core.concepts.models import Concept
+    from core.mappings.models import Mapping
+
+    uncounted_concepts = Concept.objects.filter(_counted__isnull=True)
+    sources = Source.objects.filter(id__in=uncounted_concepts.values_list('parent_id', flat=True))
+    for source in sources:
+        source.update_concepts_count(sync=True)
+        try:
+            uncounted_concepts.filter(parent_id=source.id).update(_counted=True)
+        except:  # pylint: disable=bare-except
+            pass
+
+    uncounted_mappings = Mapping.objects.filter(_counted__isnull=True)
+    sources = Source.objects.filter(
+        id__in=uncounted_mappings.values_list('parent_id', flat=True))
+
+    for source in sources:
+        source.update_mappings_count(sync=True)
+        try:
+            uncounted_mappings.filter(parent_id=source.id).update(_counted=True)
+        except:  # pylint: disable=bare-except
+            pass

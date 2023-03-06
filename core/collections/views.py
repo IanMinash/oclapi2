@@ -33,7 +33,9 @@ from core.collections.serializers import (
     CollectionCreateSerializer, CollectionReferenceSerializer, CollectionVersionDetailSerializer,
     CollectionVersionListSerializer, CollectionVersionExportSerializer, CollectionSummaryDetailSerializer,
     CollectionVersionSummaryDetailSerializer, CollectionReferenceDetailSerializer, ExpansionSerializer,
-    ExpansionDetailSerializer, ReferenceExpressionResolveSerializer, CollectionMinimalSerializer)
+    ExpansionDetailSerializer, ReferenceExpressionResolveSerializer, CollectionMinimalSerializer,
+    CollectionSummaryFieldDistributionSerializer, CollectionSummaryVerboseSerializer,
+    CollectionVersionSummaryFieldDistributionSerializer, CollectionVersionSummaryVerboseSerializer)
 from core.collections.utils import is_version_specified
 from core.common.constants import (
     HEAD, RELEASED_PARAM, PROCESSING_PARAM, OK_MESSAGE,
@@ -51,8 +53,7 @@ from core.common.serializers import TaskSerializer
 from core.common.swagger_parameters import q_param, compress_header, page_param, verbose_param, exact_match_param, \
     include_facets_header, sort_asc_param, sort_desc_param, updated_since_param, include_retired_param, limit_param
 from core.common.tasks import add_references, export_collection, delete_collection, index_expansion_concepts, \
-    index_expansion_mappings, link_references_to_resources, reference_old_to_new_structure, \
-    link_all_references_to_resources, link_expansions_repo_versions
+    index_expansion_mappings
 from core.common.utils import compact_dict_by_values, parse_boolean_query_param
 from core.common.views import BaseAPIView, BaseLogoView, ConceptContainerExtraRetrieveUpdateDestroyView
 from core.concepts.documents import ConceptDocument
@@ -570,43 +571,6 @@ class CollectionVersionReferencesView(CollectionVersionBaseView, ListWithHeaders
         references = object_version.references.filter(expression__icontains=search_query)
         self.object_list = references if sort == 'ASC' else list(reversed(references))
         return self.list(request, *args, **kwargs)
-
-
-class CollectionVersionReferencesLinkView(CollectionVersionBaseView, APIView):  # pragma: no cover
-    serializer_class = CollectionReferenceSerializer
-    permission_classes = (IsAdminUser, )
-
-    def get_queryset(self):
-        query_params = self.request.query_params
-        search_query = query_params.get('q', '')
-        object_version = super().get_queryset().first()
-        if not object_version:
-            raise Http404()
-        return object_version.references.filter(expression__icontains=search_query)
-
-    def put(self, request, *args, **kwargs):  # pylint: disable=unused-argument
-        task = link_references_to_resources.delay(list(self.get_queryset().values_list('id', flat=True)))
-        return Response(dict(task_id=task.id))
-
-
-class CollectionReferencesOldToNewStructureMigrationView(APIView):  # pragma: no cover
-    serializer_class = CollectionReferenceSerializer
-    permission_classes = (IsAdminUser, )
-
-    @staticmethod
-    def post(_):
-        task = reference_old_to_new_structure.delay()
-        return Response(dict(task_id=task.id))
-
-
-class CollectionReferencesLinkResourcesView(APIView):  # pragma: no cover
-    serializer_class = CollectionReferenceSerializer
-    permission_classes = (IsAdminUser, )
-
-    @staticmethod
-    def post(_):
-        task = link_all_references_to_resources.delay()
-        return Response(dict(task_id=task.id))
 
 
 class CollectionVersionListView(CollectionVersionBaseView, CreateAPIView, ListWithHeadersMixin):
@@ -1175,6 +1139,13 @@ class CollectionSummaryView(CollectionBaseView, RetrieveAPIView, CreateAPIView):
     serializer_class = CollectionSummaryDetailSerializer
     permission_classes = (CanViewConceptDictionary,)
 
+    def get_serializer_class(self):
+        if self.is_verbose():
+            if self.request.query_params.get('distribution'):
+                return CollectionSummaryFieldDistributionSerializer
+            return CollectionSummaryVerboseSerializer
+        return CollectionSummaryDetailSerializer
+
     def get_object(self, queryset=None):
         instance = get_object_or_404(self.get_queryset())
         self.check_object_permissions(self.request, instance)
@@ -1192,6 +1163,13 @@ class CollectionVersionSummaryView(CollectionBaseView, RetrieveAPIView):
     serializer_class = CollectionVersionSummaryDetailSerializer
     permission_classes = (CanViewConceptDictionary,)
 
+    def get_serializer_class(self):
+        if self.is_verbose():
+            if self.request.query_params.get('distribution'):
+                return CollectionVersionSummaryFieldDistributionSerializer
+            return CollectionVersionSummaryVerboseSerializer
+        return CollectionVersionSummaryDetailSerializer
+
     def get_object(self, queryset=None):
         instance = get_object_or_404(self.get_queryset())
         self.check_object_permissions(self.request, instance)
@@ -1208,6 +1186,13 @@ class CollectionVersionSummaryView(CollectionBaseView, RetrieveAPIView):
 class CollectionLatestVersionSummaryView(CollectionVersionBaseView, RetrieveAPIView, UpdateAPIView):
     serializer_class = CollectionVersionSummaryDetailSerializer
     permission_classes = (CanViewConceptDictionary,)
+
+    def get_serializer_class(self):
+        if self.is_verbose():
+            if self.request.query_params.get('distribution'):
+                return CollectionVersionSummaryFieldDistributionSerializer
+            return CollectionVersionSummaryVerboseSerializer
+        return CollectionVersionSummaryDetailSerializer
 
     def get_object(self, queryset=None):
         obj = self.get_queryset().first()
@@ -1256,13 +1241,3 @@ class ReferenceExpressionResolveView(APIView):
 
     def post(self, _):
         return Response(self.get_results(), status=status.HTTP_200_OK)
-
-
-# for data back-fill only
-# links all expansions without repo versions but with concepts/mappings
-class ExpansionsLinkToRepoVersionsView(APIView):  # pragma: no cover
-    permission_classes = (IsAdminUser, )
-
-    def put(self, _):
-        task = link_expansions_repo_versions.delay()
-        return Response(dict(task_id=task.id))
