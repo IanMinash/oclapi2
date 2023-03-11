@@ -11,6 +11,7 @@ from core.collections.views import CollectionListView, CollectionRetrieveUpdateD
     CollectionVersionExpansionsView
 from core.common.constants import HEAD
 from core.common.fhir_helpers import translate_fhir_query
+from core.concepts.views import ConceptRetrieveUpdateDestroyView
 from core.sources.models import Source
 from core.value_sets.serializers import ValueSetDetailSerializer, \
     ValueSetExpansionParametersSerializer, ValueSetExpansionSerializer
@@ -53,7 +54,7 @@ class ValueSetListView(CollectionListView):
 class ValueSetValidateCodeView(CodeSystemValidateCodeView):
 
     def get_queryset(self):
-        queryset = super().get_queryset()
+        queryset = super(ConceptRetrieveUpdateDestroyView, self).get_queryset()
 
         parameters = self.get_parameters()
 
@@ -99,6 +100,9 @@ class ValueSetRetrieveUpdateView(CollectionRetrieveUpdateDestroyView):
 
     def get_queryset(self):
         queryset = super().get_queryset()
+        if self.request.method == 'DELETE':
+            return queryset  # Delete HEAD with all versions
+
         return queryset.exclude(version=HEAD)
 
     def get_detail_serializer(self, obj):
@@ -117,8 +121,17 @@ class ValueSetExpandView(CollectionVersionExpansionsView):
     def get_response_serializer_class(self):
         return ValueSetExpansionSerializer
 
+    def get_filter_params(self, default_version_to_head=True):
+        return super().get_filter_params(False)
+
+    def get_base_queryset(self):
+        queryset = super().get_base_queryset()
+        queryset = queryset.exclude(version=HEAD).filter(is_latest_version=True)[:1]
+        return queryset
+
     def get_queryset(self):
         qs = super().get_queryset()
+
         if self.request.method == 'GET':
             parameters = ValueSetExpansionParametersSerializer.parse_query_params(self.request.query_params)
             if not parameters.is_valid():

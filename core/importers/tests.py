@@ -13,12 +13,15 @@ from ocldev.oclcsvtojsonconverter import OclStandardCsvToJsonConverter
 
 from core.collections.models import Collection
 from core.common.constants import OPENMRS_VALIDATION_SCHEMA
+from core.common.tasks import post_import_update_resource_counts, bulk_import_parts_inline, bulk_import_inline, \
+    bulk_import
 from core.common.tests import OCLAPITestCase, OCLTestCase
 from core.concepts.models import Concept
 from core.concepts.tests.factories import ConceptFactory
 from core.importers.models import BulkImport, BulkImportInline, BulkImportParallelRunner
 from core.importers.views import csv_file_data_to_input_list
 from core.mappings.models import Mapping
+from core.mappings.tests.factories import MappingFactory
 from core.orgs.models import Organization
 from core.orgs.tests.factories import OrganizationFactory
 from core.sources.models import Source
@@ -40,12 +43,12 @@ class BulkImportTest(OCLTestCase):
         flex_importer_mock.return_value = flex_importer_instance_mock
         content = '{"foo": "bar"}\n{"foobar": "foo"}'
 
-        bulk_import = BulkImport(content=content, username='ocladmin', update_if_exists=True)
-        bulk_import.run()
+        bulk_import_instance = BulkImport(content=content, username='ocladmin', update_if_exists=True)
+        bulk_import_instance.run()
 
-        self.assertEqual(bulk_import.result.json, {"all": "200"})
-        self.assertEqual(bulk_import.result.detailed_summary, 'summary')
-        self.assertEqual(bulk_import.result.report, 'report')
+        self.assertEqual(bulk_import_instance.result.json, {"all": "200"})
+        self.assertEqual(bulk_import_instance.result.detailed_summary, 'summary')
+        self.assertEqual(bulk_import_instance.result.report, 'report')
 
         flex_importer_mock.assert_called_once_with(
             input_list=[{"foo": "bar"}, {"foobar": "foo"}],
@@ -694,8 +697,9 @@ class BulkImportParallelRunnerTest(OCLTestCase):
         self.assertEqual([l['type'] for l in importer.parts[5]], ['Source Version', 'Source Version'])
         self.assertEqual(list({l['type'] for l in importer.parts[6]}), ['Concept'])
 
+    @patch('core.importers.models.app.control')
     @patch('core.importers.models.RedisService')
-    def test_is_any_process_alive(self, redis_service_mock):
+    def test_is_any_process_alive(self, redis_service_mock, celery_app_mock):
         redis_service_mock.return_value = Mock()
         importer = BulkImportParallelRunner(
             open(
@@ -706,32 +710,43 @@ class BulkImportParallelRunnerTest(OCLTestCase):
         self.assertFalse(importer.is_any_process_alive())
 
         importer.groups = [
-            Mock(completed_count=Mock(return_value=5), __len__=Mock(return_value=5)),
-            Mock(completed_count=Mock(return_value=5), __len__=Mock(return_value=5)),
+            Mock(ready=Mock(return_value=True)),
+            Mock(ready=Mock(return_value=True)),
         ]
         self.assertFalse(importer.is_any_process_alive())
 
-        importer.groups = [
-            Mock(completed_count=Mock(return_value=10), __len__=Mock(return_value=10)),
-            Mock(completed_count=Mock(return_value=5), __len__=Mock(return_value=10)),
+        # worker1 and worker2 failed after processing some jobs and/or part of started jobs
+        # worker3 finished everything
+        importer.tasks = [
+            Mock(task_id='task1', worker='worker1', status='SUCCESS'),
+            Mock(task_id='task2', worker='worker1', status='FAILED'),
+            Mock(task_id='task3', worker='worker1', status='STARTED'),
+            Mock(task_id='task4', worker='worker1', status='STARTED'),
+            Mock(task_id='task5', worker='worker2', status='PENDING'),
+            Mock(task_id='task6', worker='worker2', status='STARTED'),
+            Mock(task_id='task7', worker='worker3', status='SUCCESS'),
         ]
-        self.assertTrue(importer.is_any_process_alive())
+
+        celery_app_mock.ping = Mock(return_value=[])
 
         importer.groups = [
-            Mock(completed_count=Mock(return_value=5), __len__=Mock(return_value=10)),
-            Mock(completed_count=Mock(return_value=5), __len__=Mock(return_value=10)),
+            Mock(ready=Mock(return_value=True)),
+            Mock(ready=Mock(return_value=False)),
         ]
-        self.assertTrue(importer.is_any_process_alive())
+        self.assertFalse(importer.is_any_process_alive())
+        self.assertCountEqual(celery_app_mock.ping.call_args[1]['destination'], ['worker1', 'worker2'])
 
-        importer.groups = [
-            Mock(completed_count=Mock(return_value=0), __len__=Mock(return_value=10)),
-        ]
-        self.assertTrue(importer.is_any_process_alive())
+        # worker1 is up
+        celery_app_mock.ping = Mock(return_value=[{'worker1': {'ping': 'ok'}}])
 
-        importer.groups = [
-            Mock(completed_count=Mock(return_value=9), __len__=Mock(return_value=10)),
-        ]
         self.assertTrue(importer.is_any_process_alive())
+        self.assertCountEqual(celery_app_mock.ping.call_args[1]['destination'], ['worker1', 'worker2'])
+
+        # worker1 and worker2 both are up
+        celery_app_mock.ping = Mock(return_value=[{'worker1': {'ping': 'ok'}}, {'worker2': {'ping': 'ok'}}])
+
+        self.assertTrue(importer.is_any_process_alive())
+        self.assertCountEqual(celery_app_mock.ping.call_args[1]['destination'], ['worker1', 'worker2'])
 
     @patch('core.importers.models.RedisService')
     def test_get_overall_tasks_progress(self, redis_service_mock):
@@ -885,9 +900,11 @@ class BulkImportViewTest(OCLAPITestCase):
         self.superuser = UserProfile.objects.get(username='ocladmin')
         self.token = self.superuser.get_token()
 
+    @patch('core.importers.views.RedisService.get_pending_tasks')
     @patch('core.importers.views.AsyncResult')
     @patch('core.importers.views.flower_get')
-    def test_get_without_task_id(self, flower_get_mock, async_result_mock):
+    def test_get_without_task_id(self, flower_get_mock, async_result_mock, pending_tasks_mock):
+        pending_tasks_mock.return_value = []
         async_result_mock.return_value = Mock(state='DONE')
         task_id1 = f"{str(uuid.uuid4())}-ocladmin~priority"
         task_id2 = f"{str(uuid.uuid4())}-foobar~normal"
@@ -1336,3 +1353,59 @@ class BulkImportViewTest(OCLAPITestCase):
         )
 
         self.assertEqual(response.status_code, 403)
+
+
+class TasksTest(OCLTestCase):
+    @patch('core.sources.models.Source.update_mappings_count')
+    @patch('core.sources.models.Source.update_concepts_count')
+    def test_post_import_update_resource_counts(self, update_concepts_count_mock, update_mappings_count_mock):
+        source = OrganizationSourceFactory()
+        concept1 = ConceptFactory(_counted=None, parent=source)
+        concept2 = ConceptFactory(_counted=True, parent=source)
+        mapping1 = MappingFactory(_counted=None, parent=source)
+        mapping2 = MappingFactory(_counted=True, parent=source)
+
+        post_import_update_resource_counts()
+        concept1.refresh_from_db()
+        mapping1.refresh_from_db()
+        concept2.refresh_from_db()
+        mapping2.refresh_from_db()
+
+        self.assertTrue(concept1._counted)  # pylint: disable=protected-access
+        self.assertTrue(mapping1._counted)  # pylint: disable=protected-access
+        self.assertTrue(concept2._counted)  # pylint: disable=protected-access
+        self.assertTrue(mapping2._counted)  # pylint: disable=protected-access
+
+        update_concepts_count_mock.assert_called_once_with(sync=True)
+        update_mappings_count_mock.assert_called_once_with(sync=True)
+
+    @patch('core.importers.models.BulkImportInline')
+    def test_bulk_import_parts_inline(self, bulk_import_inline_mock):
+        bulk_import_inline_mock.run = Mock()
+
+        bulk_import_parts_inline([1, 2], 'username', True)  # pylint: disable=no-value-for-parameter
+        bulk_import_inline_mock.assert_called_once_with(
+            content=None, username='username', update_if_exists=True, input_list=[1, 2],
+            self_task_id=ANY
+        )
+        bulk_import_inline_mock().run.assert_called_once()
+
+    @patch('core.importers.models.BulkImportInline')
+    def test_bulk_import_inline(self, bulk_import_inline_mock):
+        bulk_import_inline_mock.run = Mock()
+
+        bulk_import_inline([1, 2], 'username', True)
+        bulk_import_inline_mock.assert_called_once_with(
+            content=[1, 2], username='username', update_if_exists=True
+        )
+        bulk_import_inline_mock().run.assert_called_once()
+
+    @patch('core.importers.models.BulkImport')
+    def test_bulk_import(self, bulk_import_mock):
+        bulk_import_mock.run = Mock()
+
+        bulk_import([1, 2], 'username', True)
+        bulk_import_mock.assert_called_once_with(
+            content=[1, 2], username='username', update_if_exists=True
+        )
+        bulk_import_mock().run.assert_called_once()
