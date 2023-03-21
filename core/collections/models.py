@@ -1,5 +1,6 @@
 import time
 
+from celery_once import AlreadyQueued
 from django.conf import settings
 from django.contrib.postgres.fields import ArrayField
 from django.core.exceptions import ValidationError
@@ -776,7 +777,6 @@ class CollectionReference(models.Model):
         return isinstance(filter_def, dict) and \
                sorted(filter_def.keys()) == sorted(['property', 'op', 'value']) and \
                {type(val) for val in filter_def.values()} == {str} and \
-               filter_def['op'] in self.ALLOWED_FILTER_OPS and \
                to_snake_case(filter_def['property']) in self.get_allowed_filter_properties()
 
     def save(self, force_insert=False, force_update=False, using=None,
@@ -900,14 +900,20 @@ class Expansion(BaseResourceModel):
             if get(settings, 'TEST_MODE', False):
                 index_expansion_concepts(self.id)
             else:
-                index_expansion_concepts.apply_async((self.id, ), queue='indexing')
+                try:
+                    index_expansion_concepts.apply_async((self.id, ), queue='indexing')
+                except AlreadyQueued:
+                    pass
 
     def index_mappings(self):
         if self.mappings.exists():
             if get(settings, 'TEST_MODE', False):
                 index_expansion_mappings(self.id)
             else:
-                index_expansion_mappings.apply_async((self.id, ), queue='indexing')
+                try:
+                    index_expansion_mappings.apply_async((self.id, ), queue='indexing')
+                except AlreadyQueued:
+                    pass
 
     @staticmethod
     def to_ref_list(references):
