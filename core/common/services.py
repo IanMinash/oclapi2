@@ -13,6 +13,7 @@ from django.conf import settings
 from django.contrib.auth.backends import ModelBackend
 from django.core.files.base import ContentFile
 from django.db import connection
+from django.core.files.base import ContentFile
 from mozilla_django_oidc.contrib.drf import OIDCAuthentication
 from pydash import get
 from rest_framework.authentication import TokenAuthentication
@@ -358,14 +359,14 @@ class MinioExportService:
         return result
 
     @classmethod
-    def _upload_public(cls, file_path, file_content):
+    def _upload_public(cls, file_path, file_content: ContentFile):
         try:
             client = cls._conn()
             return client.put_object(
                 settings.AWS_STORAGE_BUCKET_NAME,
                 file_path,
                 file_content,
-                length=file_content.getbuffer().nbytes,
+                length=file_content.size,
                 metadata={"ACL": "public-read"},
             )
         except S3Error:  # pragma: no cover
