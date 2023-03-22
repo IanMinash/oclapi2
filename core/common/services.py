@@ -362,7 +362,7 @@ class MinioExportService:
         try:
             client = cls._conn()
             return client.put_object(
-                settings.AWD_STORAGE_BUCKET_NAME,
+                settings.AWS_STORAGE_BUCKET_NAME,
                 file_path,
                 file_content,
                 metadata={"ACL": "public-read"},
