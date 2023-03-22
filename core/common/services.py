@@ -9,6 +9,7 @@ from botocore.exceptions import NoCredentialsError, ClientError
 from minio import Minio
 from minio.deleteobjects import DeleteObject
 from minio.error import S3Error
+from minio.helpers import ObjectWriteResult
 from django.conf import settings
 from django.contrib.auth.backends import ModelBackend
 from django.core.files.base import ContentFile
@@ -38,9 +39,7 @@ class S3:
         """Uploads file object"""
         read_directive = "rb" if binary else "r"
         file_path = file_path if file_path else key
-        return cls._upload(
-            key, open(file_path, read_directive).read(), headers, metadata
-        )
+        return cls._upload(key, open(file_path, read_directive), headers, metadata)
 
     @classmethod
     def upload_base64(  # pylint: disable=too-many-arguments,inconsistent-return-statements
@@ -224,9 +223,7 @@ class MinioExportService:
         """Uploads file object"""
         read_directive = "rb" if binary else "r"
         file_path = file_path if file_path else key
-        return cls._upload(
-            key, open(file_path, read_directive).read(), headers, metadata
-        )
+        return cls._upload(key, open(file_path, read_directive), headers, metadata)
 
     @classmethod
     def upload_base64(  # pylint: disable=too-many-arguments,inconsistent-return-statements
@@ -344,19 +341,20 @@ class MinioExportService:
         return None
 
     @classmethod
-    def _upload(cls, file_path, file_content, headers=None, metadata=None):
+    def _upload(cls, file_path, file, headers=None, metadata=None):
         """Uploads via file content with file_path as path + name"""
-        url = cls._generate_signed_url(cls.PUT, file_path, metadata)
-        result = None
-        if url:
-            res = (
-                requests.put(url, data=file_content, headers=headers)
-                if headers
-                else requests.put(url, data=file_content)
-            )
-            result = res.status_code
-
-        return result
+        client = cls._conn()
+        file_size = len(file.read())
+        file.seek(0)
+        result: ObjectWriteResult = client.put_object(
+            settings.AWS_STORAGE_BUCKET_NAME,
+            file_path,
+            file,
+            file_size,
+            headers.get("content-type", "application/octet-stream"),
+            metadata=metadata,
+        )
+        return result.location
 
     @classmethod
     def _upload_public(cls, file_path, file_content: ContentFile):
@@ -369,7 +367,8 @@ class MinioExportService:
                 length=file_content.size,
                 metadata={"ACL": "public-read"},
             )
-        except S3Error:  # pragma: no cover
+        except S3Error as e:  # pragma: no cover
+            print(e)
             pass
 
         return None
