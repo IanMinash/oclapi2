@@ -321,7 +321,7 @@ class MinioExportService:
     @staticmethod
     def _session():
         return Minio(
-            "host.docker.internal:9090",
+            "s3.health.go.ke",
             access_key=settings.AWS_ACCESS_KEY_ID,
             secret_key=settings.AWS_SECRET_ACCESS_KEY,
             secure=True if settings.ENV != "development" else False,
