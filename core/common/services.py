@@ -365,6 +365,7 @@ class MinioExportService:
                 settings.AWS_STORAGE_BUCKET_NAME,
                 file_path,
                 file_content,
+                length=-1,
                 metadata={"ACL": "public-read"},
             )
         except S3Error:  # pragma: no cover
