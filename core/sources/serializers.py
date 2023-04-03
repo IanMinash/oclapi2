@@ -1,7 +1,7 @@
 import json
 
 from django.core.validators import RegexValidator
-from pydash import get
+from pydash import get, compact
 from rest_framework.fields import CharField, IntegerField, DateTimeField, ChoiceField, JSONField, ListField, \
     BooleanField, SerializerMethodField
 from rest_framework.relations import PrimaryKeyRelatedField
@@ -242,34 +242,21 @@ class SourceSummaryDetailSerializer(SourceSummarySerializer):
         )
 
 
-class SourceSummaryVerboseSerializer(ModelSerializer):
-    from_sources = SerializerMethodField()
-    to_sources = SerializerMethodField()
+class AbstractSourceSummaryVerboseSerializer(ModelSerializer):
     concepts = JSONField(source='concepts_distribution')
     mappings = JSONField(source='mappings_distribution')
-    locales = JSONField(source='concept_names_distribution')
     versions = JSONField(source='versions_distribution')
     uuid = CharField(source='id')
-    id = CharField(source='mnemonic')
 
     class Meta:
         model = Source
         fields = (
-            'id', 'uuid', 'concepts', 'mappings', 'locales', 'versions', 'from_sources', 'to_sources'
+            'id', 'uuid', 'concepts', 'mappings', 'versions'
         )
 
-    @staticmethod
-    def get_from_sources(obj):
-        return obj.get_sources_with_distribution(obj.from_sources, 'get_from_source_map_type_distribution')
 
-    @staticmethod
-    def get_to_sources(obj):
-        return obj.get_sources_with_distribution(obj.to_sources, 'get_to_source_map_type_distribution')
-
-
-class SourceSummaryFieldDistributionSerializer(ModelSerializer):
+class AbstractSourceSummaryFieldDistributionSerializer(ModelSerializer):
     uuid = CharField(source='id')
-    id = CharField(source='mnemonic')
     distribution = SerializerMethodField()
 
     class Meta:
@@ -280,12 +267,24 @@ class SourceSummaryFieldDistributionSerializer(ModelSerializer):
 
     def get_distribution(self, obj):
         result = {}
-        fields = (get(self.context, 'request.query_params.distribution') or '').split(',')
+        fields = compact((get(self.context, 'request.query_params.distribution') or '').split(','))
+        source_names = compact((get(self.context, 'request.query_params.sources') or '').split(','))
         for field in fields:
             func = get(obj, f"get_{field}_distribution")
             if func:
-                result[field] = func()
+                kwargs = {
+                    'source_names': source_names
+                } if field in ['to_sources_map_type', 'from_sources_map_type'] else {}
+                result[field] = func(**kwargs)
         return result
+
+
+class SourceSummaryVerboseSerializer(AbstractSourceSummaryVerboseSerializer):
+    id = CharField(source='mnemonic')
+
+
+class SourceSummaryFieldDistributionSerializer(AbstractSourceSummaryFieldDistributionSerializer):
+    id = CharField(source='mnemonic')
 
 
 class SourceVersionSummarySerializer(ModelSerializer):
@@ -305,49 +304,20 @@ class SourceVersionSummaryDetailSerializer(SourceVersionSummarySerializer):
         )
 
 
-class SourceVersionSummaryVerboseSerializer(ModelSerializer):
-    from_sources = SerializerMethodField()
-    to_sources = SerializerMethodField()
-    concepts = JSONField(source='concepts_distribution')
-    mappings = JSONField(source='mappings_distribution')
-    locales = JSONField(source='concept_names_distribution')
-    uuid = CharField(source='id')
+class SourceVersionSummaryVerboseSerializer(AbstractSourceSummaryVerboseSerializer):
     id = CharField(source='version')
 
-    class Meta:
-        model = Source
-        fields = (
-            'id', 'uuid', 'concepts', 'mappings', 'locales', 'from_sources', 'to_sources'
-        )
+    def __init__(self, *args, **kwargs):
+        try:
+            self.fields.pop('versions', None)
+        except:  # pylint: disable=bare-except
+            pass
 
-    @staticmethod
-    def get_from_sources(obj):
-        return obj.get_sources_with_distribution(obj.from_sources, 'get_from_source_map_type_distribution')
-
-    @staticmethod
-    def get_to_sources(obj):
-        return obj.get_sources_with_distribution(obj.to_sources, 'get_to_source_map_type_distribution')
+        super().__init__(*args, **kwargs)
 
 
-class SourceVersionSummaryFieldDistributionSerializer(ModelSerializer):
-    uuid = CharField(source='id')
+class SourceVersionSummaryFieldDistributionSerializer(AbstractSourceSummaryFieldDistributionSerializer):
     id = CharField(source='version')
-    distribution = SerializerMethodField()
-
-    class Meta:
-        model = Source
-        fields = (
-            'id', 'uuid', 'distribution'
-        )
-
-    def get_distribution(self, obj):
-        result = {}
-        fields = (get(self.context, 'request.query_params.distribution') or '').split(',')
-        for field in fields:
-            func = get(obj, f"get_{field}_distribution")
-            if func:
-                result[field] = func()
-        return result
 
 
 class SourceDetailSerializer(SourceCreateOrUpdateSerializer):

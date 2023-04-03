@@ -509,15 +509,65 @@ class Source(DirtyFieldsMixin, ConceptContainerModel):
     def to_sources(self):
         return Source.objects.filter(id__in=self.referenced_to_sources().values_list('id', flat=True))
 
-    def get_sources_with_distribution(self, sources, distribution_method):
+    def get_to_sources_map_type_distribution(self, source_names=None):
+        sources = self.to_sources
+        if source_names:
+            sources = sources.filter(mnemonic__in=source_names)
+        return self._get_sources_map_type_distribution(sources, 'toConceptSource')
+
+    def get_from_sources_map_type_distribution(self, source_names=None):
+        sources = self.from_sources
+        if source_names:
+            sources = sources.filter(mnemonic__in=source_names)
+        return self._get_sources_map_type_distribution(sources, 'fromConceptSource')
+
+    @staticmethod
+    def __to_distribution(map_types, is_retired, result, total, active, retired):  # pylint: disable=too-many-arguments
+        for map_type in map_types:
+            if map_type[0] not in result:
+                result[map_type[0]] = {
+                    'total': 0,
+                    'active': 0,
+                    'retired': 0,
+                    'map_type': map_type[0]
+                }
+            result[map_type[0]]['total'] += map_type[1]
+            if is_retired:
+                result[map_type[0]]['retired'] += map_type[1]
+                retired += map_type[1]
+            else:
+                result[map_type[0]]['active'] += map_type[1]
+                active += map_type[1]
+            total += map_type[1]
+
+        return result, total, active, retired
+
+    def _get_sources_map_type_distribution(self, sources, facet_source_key):
         from core.sources.serializers import SourceVersionMinimalSerializer
-        result = [
-            {
-                **SourceVersionMinimalSerializer(source).data,
-                'distribution': get(self, distribution_method)(source)
-            } for source in sources
-        ]
-        return sorted(result, key=lambda _source: get(_source, 'distribution.total'), reverse=True)
+        distribution = []
+        for source in sources:
+            active_mapping_facets = self.get_mapping_facets({facet_source_key: source.mnemonic})
+            retired_mapping_facets = self.get_mapping_facets({facet_source_key: source.mnemonic, 'retired': True})
+
+            result, total, active, retired = {}, 0, 0, 0
+
+            result, total, active, retired = self.__to_distribution(
+                active_mapping_facets.mapType, False, result, total, active, retired)
+            result, total, active, retired = self.__to_distribution(
+                retired_mapping_facets.mapType, True, result, total, active, retired)
+
+            distribution.append(
+                {
+                    'distribution': {
+                        'active': active,
+                        'retired': retired,
+                        'total': total,
+                        'map_types': list(result.values())
+                    },
+                    **SourceVersionMinimalSerializer(source).data
+                }
+            )
+        return sorted(distribution, key=lambda dist: dist['distribution']['total'], reverse=True)
 
     def referenced_from_sources(self):
         return Source.objects.exclude(
@@ -542,3 +592,30 @@ class Source(DirtyFieldsMixin, ConceptContainerModel):
             return self.mappings_set.filter(id=F('versioned_object_id'))
 
         return self.mappings.filter()
+
+    @property
+    def mappings_distribution(self):
+        facets = self.get_mapping_facets()
+
+        return dict(
+            active=self.active_mappings,
+            retired=self.retired_mappings_count,
+            map_type=self._to_clean_facets(facets.mapType or []),
+            to_concept_source=self._to_clean_facets(facets.toConceptSource or [], True),
+            from_concept_source=self._to_clean_facets(facets.fromConceptSource or [], True),
+        )
+
+    def _get_resource_facet_filters(self, filters=None):
+        _filters = {
+            'source': self.mnemonic,
+            'ownerType': self.parent.resource_type,
+            'owner': self.parent.mnemonic,
+            'is_active': True,
+            'retired': False
+        }
+        if self.is_head:
+            _filters['is_latest_version'] = True
+        else:
+            _filters['source_version'] = self.version
+
+        return {**_filters, **(filters or {})}

@@ -17,7 +17,7 @@ class MappingSearch(CommonSearch):
     ]
 
     facets = {
-        'toConceptSource': TermsFacet(field='to_concept_source', size=FACET_SIZE),
+        'toConceptSource': TermsFacet(field='to_concept_source', size=100),
         'fromConceptSource': TermsFacet(field='from_concept_source', size=FACET_SIZE),
         'toConceptOwnerType': TermsFacet(field='to_concept_owner_type'),
         'fromConceptOwnerType': TermsFacet(field='from_concept_owner_type'),
@@ -29,7 +29,7 @@ class MappingSearch(CommonSearch):
         'concept': TermsFacet(field='concept', size=FACET_SIZE),
         'toConcept': TermsFacet(field='to_concept', size=FACET_SIZE),
         'fromConcept': TermsFacet(field='from_concept', size=FACET_SIZE),
-        'mapType': TermsFacet(field='map_type', size=FACET_SIZE),
+        'mapType': TermsFacet(field='map_type', size=100),
         'retired': TermsFacet(field='retired'),
         'source': TermsFacet(field='source', size=FACET_SIZE),
         'collection': TermsFacet(field='collection', size=FACET_SIZE),
@@ -39,4 +39,6 @@ class MappingSearch(CommonSearch):
         'is_latest_version': TermsFacet(field='is_latest_version'),
         'collection_owner_url': TermsFacet(field='collection_owner_url', size=FACET_SIZE),
         'expansion': TermsFacet(field='expansion', size=FACET_SIZE),
+        'source_version': TermsFacet(field='source_version', size=FACET_SIZE),
+        'collection_version': TermsFacet(field='collection_version', size=FACET_SIZE),
     }

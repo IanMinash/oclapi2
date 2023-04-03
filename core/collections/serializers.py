@@ -251,45 +251,26 @@ class CollectionSummaryDetailSerializer(CollectionSummarySerializer):
         )
 
 
-class CollectionSummaryVerboseSerializer(ModelSerializer):
-    sources = JSONField(source='referenced_sources_distribution')
-    collections = JSONField(source='referenced_collections_distribution')
+class AbstractCollectionSummaryVerboseSerializer(ModelSerializer):
+    # sources = JSONField(source='referenced_sources_distribution')
+    # collections = JSONField(source='referenced_collections_distribution')
     concepts = JSONField(source='concepts_distribution')
     mappings = JSONField(source='mappings_distribution')
-    locales = JSONField(source='concept_names_distribution')
     versions = JSONField(source='versions_distribution')
     references = JSONField(source='references_distribution')
     expansions = IntegerField(source='expansions_count')
     uuid = CharField(source='id')
-    id = CharField(source='mnemonic')
 
     class Meta:
         model = Collection
         fields = (
-            'id', 'uuid', 'concepts', 'mappings', 'locales', 'versions', 'references', 'expansions', 'sources',
-            'collections'
+            'id', 'uuid', 'concepts', 'mappings', 'versions', 'references', 'expansions',
+            # 'sources', 'collections'
         )
 
 
-class CollectionVersionSummaryVerboseSerializer(ModelSerializer):
-    concepts = JSONField(source='concepts_distribution')
-    mappings = JSONField(source='mappings_distribution')
-    locales = JSONField(source='concept_names_distribution')
-    references = JSONField(source='references_distribution')
-    expansions = IntegerField(source='expansions_count')
+class AbstractCollectionSummaryFieldDistributionSerializer(ModelSerializer):
     uuid = CharField(source='id')
-    id = CharField(source='version')
-
-    class Meta:
-        model = Collection
-        fields = (
-            'id', 'uuid', 'concepts', 'mappings', 'locales', 'references', 'expansions'
-        )
-
-
-class CollectionSummaryFieldDistributionSerializer(ModelSerializer):
-    uuid = CharField(source='id')
-    id = CharField(source='mnemonic')
     distribution = SerializerMethodField()
 
     class Meta:
@@ -308,15 +289,27 @@ class CollectionSummaryFieldDistributionSerializer(ModelSerializer):
         return result
 
 
-class CollectionVersionSummaryFieldDistributionSerializer(CollectionSummaryFieldDistributionSerializer):
-    uuid = CharField(source='id')
+class CollectionSummaryVerboseSerializer(AbstractCollectionSummaryVerboseSerializer):
+    id = CharField(source='mnemonic')
+
+
+class CollectionVersionSummaryVerboseSerializer(AbstractCollectionSummaryVerboseSerializer):
     id = CharField(source='version')
 
-    class Meta:
-        model = Collection
-        fields = (
-            'id', 'uuid', 'distribution'
-        )
+    def __init__(self, *args, **kwargs):
+        try:
+            self.fields.pop('versions', None)
+        except:  # pylint: disable=bare-except
+            pass
+        super().__init__(*args, **kwargs)
+
+
+class CollectionSummaryFieldDistributionSerializer(AbstractCollectionSummaryFieldDistributionSerializer):
+    id = CharField(source='mnemonic')
+
+
+class CollectionVersionSummaryFieldDistributionSerializer(AbstractCollectionSummaryFieldDistributionSerializer):
+    id = CharField(source='version')
 
 
 class CollectionVersionSummarySerializer(ModelSerializer):
