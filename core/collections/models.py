@@ -63,7 +63,11 @@ class Collection(ConceptContainerModel):
                 condition=models.Q(organization=None),
             )
         ]
-        indexes = [] + ConceptContainerModel.Meta.indexes
+        indexes = [
+                      models.Index(fields=['uri']),
+                      models.Index(name="coll_mnemonic_like", fields=["mnemonic"], opclasses=["text_pattern_ops"]),
+                      models.Index(fields=['public_access']),
+                  ] + ConceptContainerModel.Meta.indexes
 
     collection_type = models.TextField(blank=True)
     preferred_source = models.TextField(blank=True)
@@ -273,11 +277,14 @@ class Collection(ConceptContainerModel):
 
     def index_children(self):
         if self.expansion_uri:
+            expansion = self.expansion
+            if not expansion:
+                return
             from core.concepts.documents import ConceptDocument
             from core.mappings.documents import MappingDocument
 
-            self.batch_index(self.expansion.concepts, ConceptDocument)
-            self.batch_index(self.expansion.mappings, MappingDocument)
+            self.batch_index(expansion.concepts, ConceptDocument)
+            self.batch_index(expansion.mappings, MappingDocument)
 
     @property
     def expansion(self):
@@ -368,6 +375,18 @@ class Collection(ConceptContainerModel):
                     result[version.uri] = _result
 
         return sorted(result.values(), key=lambda summary: get(summary, 'distribution.references'), reverse=True)
+
+    def _get_resource_facet_filters(self, filters=None):
+        _filters = {
+            'collection': self.mnemonic,
+            'collection_owner_url': to_owner_uri(self.uri),
+            'expansion': self.expansion.mnemonic,
+            'is_active': True,
+            'retired': False,
+            'collection_version': self.version
+        }
+
+        return {**_filters, **(filters or {})}
 
 
 class ReferencedConcept(models.Model):
@@ -836,7 +855,10 @@ def default_expansion_parameters():
 class Expansion(BaseResourceModel):
     class Meta:
         db_table = 'collection_expansions'
-        indexes = [] + BaseResourceModel.Meta.indexes
+        indexes = [
+                      models.Index(fields=['uri']),
+                      models.Index(name="expansion_mnemonic_like", fields=["mnemonic"], opclasses=["text_pattern_ops"])
+                  ] + BaseResourceModel.Meta.indexes
 
     parameters = models.JSONField(default=default_expansion_parameters)
     canonical_url = models.URLField(null=True, blank=True)

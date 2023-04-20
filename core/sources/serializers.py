@@ -1,7 +1,7 @@
 import json
 
 from django.core.validators import RegexValidator
-from pydash import get
+from pydash import get, compact
 from rest_framework.fields import CharField, IntegerField, DateTimeField, ChoiceField, JSONField, ListField, \
     BooleanField, SerializerMethodField
 from rest_framework.relations import PrimaryKeyRelatedField
@@ -10,6 +10,7 @@ from rest_framework.serializers import ModelSerializer
 from core.client_configs.serializers import ClientConfigSerializer
 from core.common.constants import DEFAULT_ACCESS_TYPE, NAMESPACE_REGEX, ACCESS_TYPE_CHOICES, HEAD, \
     INCLUDE_SUMMARY, INCLUDE_CLIENT_CONFIGS, INCLUDE_HIERARCHY_ROOT
+from core.common.serializers import AbstractRepoResourcesSerializer
 from core.orgs.models import Organization
 from core.settings import DEFAULT_LOCALE
 from core.sources.models import Source
@@ -242,34 +243,21 @@ class SourceSummaryDetailSerializer(SourceSummarySerializer):
         )
 
 
-class SourceSummaryVerboseSerializer(ModelSerializer):
-    from_sources = SerializerMethodField()
-    to_sources = SerializerMethodField()
+class AbstractSourceSummaryVerboseSerializer(ModelSerializer):
     concepts = JSONField(source='concepts_distribution')
     mappings = JSONField(source='mappings_distribution')
-    locales = JSONField(source='concept_names_distribution')
     versions = JSONField(source='versions_distribution')
     uuid = CharField(source='id')
-    id = CharField(source='mnemonic')
 
     class Meta:
         model = Source
         fields = (
-            'id', 'uuid', 'concepts', 'mappings', 'locales', 'versions', 'from_sources', 'to_sources'
+            'id', 'uuid', 'concepts', 'mappings', 'versions'
         )
 
-    @staticmethod
-    def get_from_sources(obj):
-        return obj.get_sources_with_distribution(obj.from_sources, 'get_from_source_map_type_distribution')
 
-    @staticmethod
-    def get_to_sources(obj):
-        return obj.get_sources_with_distribution(obj.to_sources, 'get_to_source_map_type_distribution')
-
-
-class SourceSummaryFieldDistributionSerializer(ModelSerializer):
+class AbstractSourceSummaryFieldDistributionSerializer(ModelSerializer):
     uuid = CharField(source='id')
-    id = CharField(source='mnemonic')
     distribution = SerializerMethodField()
 
     class Meta:
@@ -280,12 +268,24 @@ class SourceSummaryFieldDistributionSerializer(ModelSerializer):
 
     def get_distribution(self, obj):
         result = {}
-        fields = (get(self.context, 'request.query_params.distribution') or '').split(',')
+        fields = compact((get(self.context, 'request.query_params.distribution') or '').split(','))
+        source_names = compact((get(self.context, 'request.query_params.sources') or '').split(','))
         for field in fields:
             func = get(obj, f"get_{field}_distribution")
             if func:
-                result[field] = func()
+                kwargs = {
+                    'source_names': source_names
+                } if field in ['to_sources_map_type', 'from_sources_map_type'] else {}
+                result[field] = func(**kwargs)
         return result
+
+
+class SourceSummaryVerboseSerializer(AbstractSourceSummaryVerboseSerializer):
+    id = CharField(source='mnemonic')
+
+
+class SourceSummaryFieldDistributionSerializer(AbstractSourceSummaryFieldDistributionSerializer):
+    id = CharField(source='mnemonic')
 
 
 class SourceVersionSummarySerializer(ModelSerializer):
@@ -305,52 +305,23 @@ class SourceVersionSummaryDetailSerializer(SourceVersionSummarySerializer):
         )
 
 
-class SourceVersionSummaryVerboseSerializer(ModelSerializer):
-    from_sources = SerializerMethodField()
-    to_sources = SerializerMethodField()
-    concepts = JSONField(source='concepts_distribution')
-    mappings = JSONField(source='mappings_distribution')
-    locales = JSONField(source='concept_names_distribution')
-    uuid = CharField(source='id')
+class SourceVersionSummaryVerboseSerializer(AbstractSourceSummaryVerboseSerializer):
     id = CharField(source='version')
 
-    class Meta:
-        model = Source
-        fields = (
-            'id', 'uuid', 'concepts', 'mappings', 'locales', 'from_sources', 'to_sources'
-        )
+    def __init__(self, *args, **kwargs):
+        try:
+            self.fields.pop('versions', None)
+        except:  # pylint: disable=bare-except
+            pass
 
-    @staticmethod
-    def get_from_sources(obj):
-        return obj.get_sources_with_distribution(obj.from_sources, 'get_from_source_map_type_distribution')
-
-    @staticmethod
-    def get_to_sources(obj):
-        return obj.get_sources_with_distribution(obj.to_sources, 'get_to_source_map_type_distribution')
+        super().__init__(*args, **kwargs)
 
 
-class SourceVersionSummaryFieldDistributionSerializer(ModelSerializer):
-    uuid = CharField(source='id')
+class SourceVersionSummaryFieldDistributionSerializer(AbstractSourceSummaryFieldDistributionSerializer):
     id = CharField(source='version')
-    distribution = SerializerMethodField()
-
-    class Meta:
-        model = Source
-        fields = (
-            'id', 'uuid', 'distribution'
-        )
-
-    def get_distribution(self, obj):
-        result = {}
-        fields = (get(self.context, 'request.query_params.distribution') or '').split(',')
-        for field in fields:
-            func = get(obj, f"get_{field}_distribution")
-            if func:
-                result[field] = func()
-        return result
 
 
-class SourceDetailSerializer(SourceCreateOrUpdateSerializer):
+class SourceDetailSerializer(SourceCreateOrUpdateSerializer, AbstractRepoResourcesSerializer):
     type = CharField(source='resource_type')
     uuid = CharField(source='id')
     id = CharField(source='mnemonic')
@@ -384,7 +355,7 @@ class SourceDetailSerializer(SourceCreateOrUpdateSerializer):
             'autoid_mapping_mnemonic', 'autoid_mapping_external_id',
             'autoid_concept_mnemonic_start_from', 'autoid_concept_external_id_start_from',
             'autoid_mapping_mnemonic_start_from', 'autoid_mapping_external_id_start_from',
-        )
+        ) + AbstractRepoResourcesSerializer.Meta.fields
 
     def __init__(self, *args, **kwargs):
         params = get(kwargs, 'context.request.query_params')
@@ -434,7 +405,7 @@ class SourceDetailSerializer(SourceCreateOrUpdateSerializer):
         return ret
 
 
-class SourceVersionDetailSerializer(SourceCreateOrUpdateSerializer):
+class SourceVersionDetailSerializer(SourceCreateOrUpdateSerializer, AbstractRepoResourcesSerializer):
     type = CharField(source='resource_version_type')
     uuid = CharField(source='id')
     id = CharField(source='version')
@@ -468,7 +439,7 @@ class SourceVersionDetailSerializer(SourceCreateOrUpdateSerializer):
             'content_type', 'revision_date', 'summary', 'text', 'meta',
             'experimental', 'case_sensitive', 'collection_reference', 'hierarchy_meaning', 'compositional',
             'version_needed', 'hierarchy_root_url'
-        )
+        ) + AbstractRepoResourcesSerializer.Meta.fields
 
     def __init__(self, *args, **kwargs):
         params = get(kwargs, 'context.request.query_params')

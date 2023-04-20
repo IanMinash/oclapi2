@@ -15,11 +15,12 @@ from elasticsearch_dsl import Q
 from pydash import get
 from rest_framework import response, generics, status
 from rest_framework.generics import ListAPIView, RetrieveUpdateDestroyAPIView
-from rest_framework.permissions import AllowAny
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from core import __version__
+from core.common.checksums import Checksum
 from core.common.constants import SEARCH_PARAM, LIST_DEFAULT_LIMIT, CSV_DEFAULT_LIMIT, \
     LIMIT_PARAM, NOT_FOUND, MUST_SPECIFY_EXTRA_PARAM_IN_BODY, INCLUDE_RETIRED_PARAM, VERBOSE_PARAM, HEAD, LATEST, \
     BRIEF_PARAM, ES_REQUEST_TIMEOUT, INCLUDE_INACTIVE, FHIR_LIMIT_PARAM
@@ -27,7 +28,7 @@ from core.common.exceptions import Http400
 from core.common.mixins import PathWalkerMixin
 from core.common.serializers import RootSerializer
 from core.common.utils import compact_dict_by_values, to_snake_case, to_camel_case, parse_updated_since_param, \
-    is_url_encoded_string
+    is_url_encoded_string, to_int
 from core.concepts.permissions import CanViewParentDictionary, CanEditParentDictionary
 from core.orgs.constants import ORG_OBJECT_TYPE
 from core.users.constants import USER_OBJECT_TYPE
@@ -616,7 +617,7 @@ class BaseAPIView(generics.GenericAPIView, PathWalkerMixin):
         self.limit = int(self.limit)
 
         self.limit = self.limit or LIST_DEFAULT_LIMIT
-        page = max(int(self.request.GET.get('page') or '1'), 1)
+        page = max(to_int(self.request.GET.get('page'), 1), 1)
         start = (page - 1) * self.limit
         end = start + self.limit
         try:
@@ -680,9 +681,10 @@ class SourceChildCommonBaseView(BaseAPIView):
     def __set_params(self):
         self.params = self.__get_params()
         if self.params:
-            self.limit = CSV_DEFAULT_LIMIT if self.params.get('csv') else int(self.params.get(
-                LIMIT_PARAM, LIST_DEFAULT_LIMIT
-            ))
+            self.limit = to_int(
+                CSV_DEFAULT_LIMIT if self.params.get('csv') else self.params.get(LIMIT_PARAM),
+                LIST_DEFAULT_LIMIT
+            )
 
 
 class SourceChildExtrasBaseView:
@@ -896,3 +898,21 @@ class ConceptContainerExtraRetrieveUpdateDestroyView(RetrieveUpdateDestroyAPIVie
             return Response(status=status.HTTP_204_NO_CONTENT)
 
         return Response(dict(detail=NOT_FOUND), status=status.HTTP_404_NOT_FOUND)
+
+
+class ChecksumView(APIView):
+    permission_classes = (IsAuthenticated,)
+
+    @swagger_auto_schema(
+        request_body=openapi.Schema(type=openapi.TYPE_OBJECT),
+        responses={
+            200: openapi.Response(
+                'MD5 checksum of the request body',
+                openapi.Schema(type=openapi.TYPE_STRING),
+            )
+        },
+    )
+    def post(self, request):
+        if not request.data:
+            return Response({'error': 'Request body is required'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(Checksum.generate(request.data))

@@ -874,3 +874,19 @@ def get_end_of_month(date=timezone.now().date()):
 
 def get_prev_month(date=timezone.now().date()):
     return date.replace(day=1) - timedelta(days=1)
+
+
+def to_int(value, default_value):
+    try:
+        return int(value) or default_value
+    except (ValueError, TypeError):
+        return default_value
+
+
+def generic_sort(_list):
+    def compare(item):
+        if isinstance(item, (int, float, str, bool)):
+            return item
+        else:
+            return str(item)
+    return sorted(_list, key=compare)

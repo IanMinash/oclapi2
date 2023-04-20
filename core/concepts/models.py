@@ -1,11 +1,12 @@
 from django.conf import settings
-from django.contrib.postgres.indexes import GinIndex, HashIndex
+from django.contrib.postgres.indexes import HashIndex
 from django.core.exceptions import ValidationError
 from django.core.validators import RegexValidator
 from django.db import models, IntegrityError, transaction
 from django.db.models import F, Q
 from pydash import get, compact
 
+from core.common.checksums import ChecksumModel
 from core.common.constants import ISO_639_1, LATEST, HEAD, ALL
 from core.common.mixins import SourceChildMixin
 from core.common.models import VersionedModel, ConceptContainerModel
@@ -20,16 +21,9 @@ from core.concepts.constants import CONCEPT_TYPE, LOCALES_FULLY_SPECIFIED, LOCAL
 from core.concepts.mixins import ConceptValidationMixin
 
 
-class AbstractLocalizedText(models.Model):
+class AbstractLocalizedText(ChecksumModel):
     class Meta:
         abstract = True
-        indexes = [
-            HashIndex(fields=['name']),
-            models.Index(fields=['type']),
-            models.Index(fields=['locale']),
-            models.Index(fields=['locale_preferred']),
-            models.Index(fields=['created_at']),
-        ]
 
     id = models.BigAutoField(primary_key=True)
     external_id = models.TextField(null=True, blank=True)
@@ -38,6 +32,8 @@ class AbstractLocalizedText(models.Model):
     locale = models.TextField()
     locale_preferred = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
+
+    CHECKSUM_EXCLUSIONS = ['id', 'created_at', 'concept_id', 'concept']
 
     def to_dict(self):
         return dict(
@@ -91,7 +87,6 @@ class ConceptDescription(AbstractLocalizedText):
 
     class Meta:
         db_table = 'concept_descriptions'
-        indexes = AbstractLocalizedText.Meta.indexes
 
     @staticmethod
     def _build(params):
@@ -116,7 +111,12 @@ class ConceptName(AbstractLocalizedText):
 
     class Meta:
         db_table = 'concept_names'
-        indexes = AbstractLocalizedText.Meta.indexes
+        indexes = [
+                      HashIndex(fields=['name']),
+                      models.Index(fields=['locale']),
+                      models.Index(fields=['created_at']),
+                      models.Index(fields=['type']),
+                  ]
 
     @staticmethod
     def _build(params):
@@ -143,96 +143,30 @@ class Concept(ConceptValidationMixin, SourceChildMixin, VersionedModel):  # pyli
         db_table = 'concepts'
         unique_together = ('mnemonic', 'version', 'parent')
         indexes = [
-            models.Index(
-                name='concepts_updated_6490d8_idx',
-                fields=['-updated_at', 'is_active', 'retired', 'public_access'],
-                condition=(Q(is_active=True) & Q(retired=False) & ~Q(public_access='None'))
-            ),
-            models.Index(
-                name='concepts_ver_sort_idx',
-                fields=['-updated_at', 'is_active', 'retired', 'is_latest_version', 'public_access'],
-                condition=(Q(is_active=True) & Q(retired=False) & Q(is_latest_version=True) & ~Q(public_access='None'))
-            ),
-            models.Index(
-                name='concepts_public_conditional',
-                fields=['public_access', 'is_active', 'retired', 'is_latest_version'],
-                condition=(Q(is_active=True) & Q(retired=False) & Q(is_latest_version=True) & ~Q(public_access='None'))
-            ),
-            models.Index(
-                name='concepts_ver_public',
-                fields=['is_active', 'retired', 'public_access'],
-                condition=(Q(is_active=True) & Q(retired=False) & ~Q(public_access='None'))
-            ),
-            models.Index(
-                name='concepts_all_for_count',
-                fields=['is_active', 'retired', 'is_latest_version'],
-                condition=(Q(is_active=True) & Q(retired=False) & Q(is_latest_version=True))
-            ),
-            models.Index(
-                name='concepts_ver_for_count',
-                fields=['is_active', 'retired'],
-                condition=(Q(is_active=True) & Q(retired=False))
-            ),
-            models.Index(
-                name='concepts_all_for_count2',
-                fields=['parent_id', 'is_active', 'retired', 'is_latest_version'],
-                condition=(Q(is_active=True) & Q(retired=False) & Q(is_latest_version=True))
-            ),
-            models.Index(
-                name='concepts_all_for_count3',
-                fields=['parent_id', '-updated_at', 'is_active', 'retired', 'id', 'versioned_object_id'],
-                condition=(Q(is_active=True) & Q(retired=False) & Q(id=F('versioned_object_id')))
-            ),
-            models.Index(
-                name='concepts_all_for_sort',
-                fields=['-updated_at', 'is_active', 'retired', 'is_latest_version'],
-                condition=(Q(is_active=True) & Q(retired=False) & Q(is_latest_version=True))
-            ),
-            models.Index(
-                name='concepts_ver_for_sort',
-                fields=['-updated_at', 'is_active', 'retired'],
-                condition=(Q(is_active=True) & Q(retired=False))
-            ),
-            models.Index(
-                name='concepts_ver_updated_idx',
-                fields=['-updated_at', 'retired', 'public_access', 'id', 'versioned_object_id'],
-                condition=(
-                        Q(is_active=True) & Q(retired=False) & Q(id=F('versioned_object_id')) & ~Q(public_access='None')
-                )
-            ),
-            models.Index(
-                name='concepts_ver_public_cond',
-                fields=['public_access', 'is_active', 'retired', 'id', 'versioned_object_id'],
-                condition=(
-                        Q(is_active=True) & Q(retired=False) & Q(id=F('versioned_object_id')) & ~Q(public_access='None')
-                )
-            ),
-            models.Index(
-                name='concepts_ver_all_for_count',
-                fields=['is_active', 'retired', 'id', 'versioned_object_id'],
-                condition=(Q(is_active=True) & Q(retired=False) & Q(id=F('versioned_object_id')))
-            ),
-            models.Index(
-                name='concepts_ver_all_for_sort',
-                fields=['-updated_at', 'is_active', 'retired', 'id', 'versioned_object_id'],
-                condition=(Q(is_active=True) & Q(retired=False) & Q(id=F('versioned_object_id')))
-            ),
-            models.Index(
-                name='concepts_ver_all_for_sort_2',
-                fields=['-updated_at', 'is_active', 'retired'],
-                condition=(Q(is_active=True) & Q(retired=False))
-            ),
-            GinIndex(
-                name='concepts_uri_trgm_id_gin_idx',
-                fields=['uri', 'id'],
-                opclasses=['gin_trgm_ops', 'int8_ops'],
-                condition=Q(is_latest_version=True)
-            )
-        ] + VersionedModel.Meta.indexes
+                      models.Index(name='concepts_up_pub_latest',
+                                   fields=['-updated_at', 'public_access', 'is_latest_version'],
+                                   condition=(Q(is_active=True) & Q(retired=False))),
+                      models.Index(name='concepts_head_up_pub_latest', fields=['-updated_at', 'public_access',
+                                                                               'is_latest_version'],
+                                   condition=(Q(is_active=True) & Q(retired=False) & Q(id=F('versioned_object_id')))),
+                      models.Index(name='concepts_pub_latest', fields=['public_access', 'is_latest_version'],
+                                   condition=(Q(is_active=True) & Q(retired=False))),
+                      models.Index(name='concepts_head_pub_latest', fields=['public_access', 'is_latest_version'],
+                                   condition=(Q(is_active=True) & Q(retired=False) & Q(id=F('versioned_object_id')))),
+                      models.Index(name='concepts_latest_parent_pub',
+                                   fields=['is_latest_version', 'parent_id', 'public_access'],
+                                   condition=(Q(is_active=True) & Q(retired=False))),
+                      models.Index(name='concepts_up_latest', fields=['-updated_at', 'is_latest_version'],
+                                   condition=(Q(is_active=True) & Q(retired=False))),
+                      models.Index(name='concepts_head_parent_pub', fields=['parent_id', 'public_access'],
+                                   condition=(Q(is_active=True) & Q(retired=False) & Q(id=F('versioned_object_id')))),
+                      models.Index(fields=['uri']),
+                      models.Index(fields=['version']),
+                  ] + VersionedModel.Meta.indexes
 
     external_id = models.TextField(null=True, blank=True)
-    concept_class = models.TextField(db_index=True)
-    datatype = models.TextField(db_index=True)
+    concept_class = models.TextField()
+    datatype = models.TextField()
     comment = models.TextField(null=True, blank=True)
     parent = models.ForeignKey('sources.Source', related_name='concepts_set', on_delete=models.CASCADE)
     sources = models.ManyToManyField('sources.Source', related_name='concepts')
@@ -244,7 +178,6 @@ class Concept(ConceptValidationMixin, SourceChildMixin, VersionedModel):  # pyli
     )
     mnemonic = models.CharField(
         max_length=255, validators=[RegexValidator(regex=CONCEPT_REGEX)],
-        db_index=True
     )
     _counted = models.BooleanField(default=True, null=True, blank=True)
     _index = models.BooleanField(default=True)
@@ -255,6 +188,15 @@ class Concept(ConceptValidationMixin, SourceChildMixin, VersionedModel):  # pyli
     ALREADY_NOT_RETIRED = CONCEPT_IS_ALREADY_NOT_RETIRED
     WAS_RETIRED = CONCEPT_WAS_RETIRED
     WAS_UNRETIRED = CONCEPT_WAS_UNRETIRED
+
+    CHECKSUM_EXCLUSIONS = [
+        'id', 'created_at', 'updated_at', 'version', 'released', 'is_latest_version', 'comment',
+        'created_by_id', 'updated_by_id', 'parent_id', 'versioned_object_id', '_counted', '_index',
+        'created_by', 'updated_by', 'parent', 'versioned_object', 'name'
+    ]
+    CHECKSUM_INCLUSIONS = [
+        'display_name', 'display_locale'
+    ]
 
     # $cascade as hierarchy attributes
     cascaded_entries = None
@@ -282,6 +224,26 @@ class Concept(ConceptValidationMixin, SourceChildMixin, VersionedModel):  # pyli
         'name_types': {'sortable': False, 'filterable': True, 'facet': True},
         'description_types': {'sortable': False, 'filterable': True, 'facet': True},
     }
+
+    def get_basic_checksums(self):
+        return {
+            **super().get_basic_checksums(),
+            'names': self.names_checksum,
+            'descriptions': self.descriptions_checksum,
+            'mappings': self.mappings_checksum
+        }
+
+    @property
+    def mappings_checksum(self):
+        return self.generate_queryset_checksum(self.get_unidirectional_mappings().filter(retired=False))
+
+    @property
+    def names_checksum(self):
+        return self.generate_queryset_checksum(self.names.filter())
+
+    @property
+    def descriptions_checksum(self):
+        return self.generate_queryset_checksum(self.descriptions.filter())
 
     @staticmethod
     def get_search_document():
@@ -612,6 +574,7 @@ class Concept(ConceptValidationMixin, SourceChildMixin, VersionedModel):  # pyli
             new_locale = locale.clone() if isinstance(locale, locale_klass) else locale_klass.build(locale)
             new_locale.concept_id = self.id
             new_locale.save()
+            new_locale.set_checksums()
 
     def remove_locales(self):
         self.names.all().delete()
@@ -718,6 +681,7 @@ class Concept(ConceptValidationMixin, SourceChildMixin, VersionedModel):  # pyli
                     )
             if create_initial_version and concept._counted is True:
                 parent_resource.update_concepts_count()
+            concept.set_checksums()
         except ValidationError as ex:
             if concept.id:
                 concept.delete()
@@ -790,6 +754,7 @@ class Concept(ConceptValidationMixin, SourceChildMixin, VersionedModel):  # pyli
                                 )
 
                     obj.sources.set([parent])
+                    obj.set_checksums()
                     persisted = True
                     cls.resume_indexing()
                     if get(settings, 'TEST_MODE', False):

@@ -35,6 +35,7 @@ from core.sources.models import Source
 from core.users.models import UserProfile
 from core.users.tests.factories import UserProfileFactory
 from .backends import OCLOIDCAuthenticationBackend
+from .checksums import Checksum
 from .fhir_helpers import translate_fhir_query
 from .serializers import IdentifierSerializer
 from .services import S3, PostgresQL, DjangoAuthService, OIDCAuthService
@@ -209,6 +210,7 @@ class OCLAPITestCase(APITestCase, BaseTestCase):
     def setUpClass(cls):
         super().setUpClass()
         call_command("loaddata", "core/fixtures/base_entities.yaml")
+        call_command("loaddata", "core/fixtures/toggles.json")
         org = Organization.objects.get(id=1)
         org.members.add(1)
 
@@ -219,6 +221,7 @@ class OCLTestCase(TestCase, BaseTestCase):
         super().setUpClass()
         call_command("loaddata", "core/fixtures/base_entities.yaml")
         call_command("loaddata", "core/fixtures/auth_groups.yaml")
+        call_command("loaddata", "core/fixtures/toggles.json")
 
     @staticmethod
     def factory_to_params(factory_klass, **kwargs):
@@ -1260,3 +1263,58 @@ class OCLOIDCAuthenticationBackendTest(OCLTestCase):
         self.assertEqual(users.first(), batman)
 
         self.assertEqual(self.backend.filter_users_by_claims({**self.claim, 'preferred_username': None}).count(), 0)
+
+
+class ChecksumTest(OCLTestCase):
+    def test_generate(self):
+        self.assertIsNotNone(Checksum.generate('foo'))
+        self.assertEqual(len(Checksum.generate('foo')), 32)
+        self.assertIsInstance(Checksum.generate('foo'), str)
+
+        # keys order
+        self.assertEqual(
+            Checksum.generate({'foo': 'bar', 'bar': 'foo'}), Checksum.generate({'bar': 'foo', 'foo': 'bar'})
+        )
+        self.assertEqual(
+            Checksum.generate({'a': 1, 'z': 100}), Checksum.generate({'z': 100, 'a': 1})
+        )
+
+        # datatype
+        self.assertNotEqual(Checksum.generate({'a': 1}), Checksum.generate({'a': 1.0}))
+        self.assertEqual(Checksum.generate({'a': 1.1}), Checksum.generate({'a': 1.10}))
+
+        # value order
+        self.assertEqual(Checksum.generate({'a': [1, 2, 3]}), Checksum.generate({'a': [2, 1, 3]}))
+        self.assertEqual(Checksum.generate([1, 2, 3]), Checksum.generate([2, 1, 3]))
+
+
+class ChecksumViewTest(OCLAPITestCase):
+    def setUp(self):
+        self.token = UserProfile.objects.get(username='ocladmin').get_token()
+
+    @patch('core.common.checksums.Checksum.generate')
+    def test_post_400(self, checksum_generate_mock):
+        response = self.client.post(
+            '/$checksum/',
+            data={},
+            HTTP_AUTHORIZATION=f"Token {self.token}",
+            format='json'
+        )
+
+        self.assertEqual(response.status_code, 400)
+        checksum_generate_mock.assert_not_called()
+
+    @patch('core.common.checksums.Checksum.generate')
+    def test_post_200(self, checksum_generate_mock):
+        checksum_generate_mock.return_value = 'checksum'
+
+        response = self.client.post(
+            '/$checksum/',
+            data={'foo': 'bar'},
+            HTTP_AUTHORIZATION=f"Token {self.token}",
+            format='json'
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data, 'checksum')
+        checksum_generate_mock.assert_called_once_with({'foo': 'bar'})

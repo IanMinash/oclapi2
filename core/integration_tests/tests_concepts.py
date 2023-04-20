@@ -1,4 +1,3 @@
-import unittest
 from unittest.mock import patch
 
 from django.conf import settings
@@ -7,6 +6,7 @@ from mock import ANY
 from core.bundles.models import Bundle
 from core.collections.tests.factories import OrganizationCollectionFactory, ExpansionFactory
 from core.common.constants import OPENMRS_VALIDATION_SCHEMA
+from core.common.tasks import rebuild_indexes
 from core.common.tests import OCLAPITestCase
 from core.concepts.documents import ConceptDocument
 from core.concepts.models import Concept
@@ -101,6 +101,7 @@ class ConceptCreateUpdateDestroyViewTest(OCLAPITestCase):
                 'created_by',
                 'parent_concept_urls',
                 'public_can_view',
+                'checksums',
                 'versioned_object_id',
             ])
         )
@@ -201,6 +202,7 @@ class ConceptCreateUpdateDestroyViewTest(OCLAPITestCase):
                     'created_by',
                     'parent_concept_urls',
                     'public_can_view',
+                    'checksums',
                     'versioned_object_id'])
         )
 
@@ -276,6 +278,7 @@ class ConceptCreateUpdateDestroyViewTest(OCLAPITestCase):
                     'created_by',
                     'parent_concept_urls',
                     'public_can_view',
+                    'checksums',
                     'versioned_object_id'])
         )
 
@@ -711,7 +714,7 @@ class ConceptCreateUpdateDestroyViewTest(OCLAPITestCase):
                     'owner', 'owner_type', 'owner_url', 'display_name', 'display_locale', 'names', 'descriptions',
                     'created_on', 'updated_on', 'versions_url', 'version', 'extras', 'name', 'type',
                     'update_comment', 'version_url', 'updated_by', 'created_by',
-                    'public_can_view', 'versioned_object_id'])
+                    'public_can_view', 'versioned_object_id', 'checksums'])
         )
 
         response = self.client.get(
@@ -1698,8 +1701,11 @@ class ConceptListViewTest(OCLAPITestCase):
         self.assertEqual(len(response.data), 1)
         self.assertEqual(response.data[0]['id'], 'MyConcept2')
 
-    @unittest.skipIf(settings.ENV == 'ci', 'this test fails on CI. Needs concepts index fixing for CI')
     def test_facets(self):
+        if settings.ENV == 'ci':
+            rebuild_indexes(['concepts'])
+        ConceptDocument().update(self.source.concepts_set.all())
+
         response = self.client.get(
             '/concepts/?facetsOnly=true'
         )

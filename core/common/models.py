@@ -12,12 +12,13 @@ from django.utils import timezone
 from django.utils.functional import cached_property
 from django_elasticsearch_dsl.registries import registry
 from django_elasticsearch_dsl.signals import RealTimeSignalProcessor
+from elasticsearch import TransportError
 from pydash import get
 
 from core.common.tasks import update_collection_active_concepts_count, update_collection_active_mappings_count, \
     delete_s3_objects
 from core.common.utils import reverse_resource, reverse_resource_version, parse_updated_since_param, drop_version, \
-    to_parent_uri, is_canonical_uri, get_export_service
+    to_parent_uri, is_canonical_uri, get_export_service, from_string_to_date
 from core.common.utils import to_owner_uri
 from core.settings import DEFAULT_LOCALE
 from .constants import (
@@ -25,7 +26,8 @@ from .constants import (
     ACCESS_TYPE_VIEW, ACCESS_TYPE_EDIT, SUPER_ADMIN_USER_ID,
     HEAD, PERSIST_NEW_ERROR_MESSAGE, SOURCE_PARENT_CANNOT_BE_NONE, PARENT_RESOURCE_CANNOT_BE_NONE,
     CREATOR_CANNOT_BE_NONE, CANNOT_DELETE_ONLY_VERSION, OPENMRS_VALIDATION_SCHEMA, VALIDATION_SCHEMAS,
-    DEFAULT_VALIDATION_SCHEMA)
+    DEFAULT_VALIDATION_SCHEMA, ES_REQUEST_TIMEOUT)
+from .exceptions import Http400
 from .fields import URIField
 from .tasks import handle_save, handle_m2m_changed, seed_children_to_new_version, update_validation_schema, \
     update_source_active_concepts_count, update_source_active_mappings_count
@@ -39,11 +41,9 @@ class BaseModel(models.Model):
     class Meta:
         abstract = True
         indexes = [
-            models.Index(fields=['uri']),
             models.Index(fields=['-updated_at']),
             models.Index(fields=['-created_at']),
             models.Index(fields=['is_active']),
-            models.Index(fields=['public_access'])
         ]
 
     id = models.BigAutoField(primary_key=True)
@@ -68,7 +68,7 @@ class BaseModel(models.Model):
     )
     is_active = models.BooleanField(default=True)
     extras = models.JSONField(null=True, blank=True, default=dict)
-    uri = models.TextField(null=True, blank=True, db_index=True)
+    uri = models.TextField(null=True, blank=True)
     _index = True
 
     @property
@@ -217,10 +217,7 @@ class BaseResourceModel(BaseModel, CommonLogoModel):
     A base resource may contain sub-resources.
     (An Organization is a base resource, but a Concept is not.)
     """
-    mnemonic = models.CharField(
-        max_length=255, validators=[RegexValidator(regex=NAMESPACE_REGEX)],
-        db_index=True
-    )
+    mnemonic = models.CharField(max_length=255, validators=[RegexValidator(regex=NAMESPACE_REGEX)],)
     mnemonic_attr = 'mnemonic'
 
     class Meta:
@@ -250,9 +247,7 @@ class VersionedModel(BaseResourceModel):
     class Meta:
         abstract = True
         indexes = [
-            models.Index(fields=['version']),
             models.Index(fields=['retired']),
-            models.Index(fields=['is_latest_version']),
         ] + BaseResourceModel.Meta.indexes
 
     @property
@@ -372,7 +367,9 @@ class ConceptContainerModel(VersionedModel):
 
     class Meta:
         abstract = True
-        indexes = [] + VersionedModel.Meta.indexes
+        indexes = [
+                      models.Index(fields=['version'])
+                  ] + VersionedModel.Meta.indexes
 
     @property
     def is_collection(self):
@@ -426,6 +423,15 @@ class ConceptContainerModel(VersionedModel):
         if last_concept_update and last_mapping_update:
             return max(last_concept_update, last_mapping_update)
         return last_concept_update or last_mapping_update or self.updated_at or timezone.now()
+
+    def get_last_child_update_from_export_url(self, export_url):
+        generic_path = self.generic_export_path(suffix=None)
+        try:
+            last_child_updated_at = export_url.split(generic_path)[1].split('?')[0].replace('.zip', '')
+            return from_string_to_date(last_child_updated_at).isoformat()
+        except:  # pylint: disable=bare-except
+            return None
+
 
     @classmethod
     def get_base_queryset(cls, params):
@@ -520,6 +526,9 @@ class ConceptContainerModel(VersionedModel):
 
     def get_active_mappings(self):
         return self.get_mappings_queryset().filter(is_active=True, retired=False)
+
+    active_concepts_queryset = property(get_active_concepts)
+    active_mappings_queryset = property(get_active_mappings)
 
     def has_parent_edit_access(self, user):
         if user.is_staff:
@@ -784,10 +793,18 @@ class ConceptContainerModel(VersionedModel):
         return path
 
     def get_export_url(self):
-        return get_export_service().url_for(self.export_path)
+        service = get_export_service()
+        if self.is_head:
+            path = self.export_path
+        else:
+            path = service.get_last_key_from_path(self.generic_export_path(suffix=None)) or self.export_path
+        return service.url_for(path)
 
     def has_export(self):
-        return get_export_service().exists(self.export_path)
+        service = get_export_service()
+        if self.is_head:
+            return service.exists(self.export_path)
+        return service.has_path(self.generic_export_path(suffix=None))
 
     def can_view_all_content(self, user):
         if get(user, 'is_anonymous'):
@@ -883,19 +900,24 @@ class ConceptContainerModel(VersionedModel):
 
     @property
     def concepts_distribution(self):
+        facets = self.get_concept_facets()
         return dict(
             active=self.active_concepts,
             retired=self.retired_concepts_count,
-            concept_class=self.concept_class_count,
-            datatype=self.datatype_count
+            concept_class=self._to_clean_facets(facets.conceptClass or []),
+            datatype=self._to_clean_facets(facets.datatype or []),
+            locale=self._to_clean_facets(facets.locale or []),
+            name_type=self._to_clean_facets(facets.nameTypes or [])
         )
 
     @property
     def mappings_distribution(self):
+        facets = self.get_mapping_facets()
+
         return dict(
             active=self.active_mappings,
             retired=self.retired_mappings_count,
-            map_types=self.map_types_count
+            map_type=self._to_clean_facets(facets.mapType or []),
         )
 
     @property
@@ -934,6 +956,35 @@ class ConceptContainerModel(VersionedModel):
     @staticmethod
     def _get_distribution(queryset, field):
         return list(queryset.values(field).annotate(count=Count('id')).values(field, 'count').order_by('-count'))
+
+    def get_concept_facets(self, filters=None):
+        from core.concepts.search import ConceptSearch
+        return self._get_resource_facets(ConceptSearch, filters)
+
+    def get_mapping_facets(self, filters=None):
+        from core.mappings.search import MappingSearch
+        return self._get_resource_facets(MappingSearch, filters)
+
+    def _get_resource_facets(self, facet_class, filters=None):
+        search = facet_class('', filters=self._get_resource_facet_filters(filters))
+        search.params(request_timeout=ES_REQUEST_TIMEOUT)
+        try:
+            facets = search.execute().facets
+        except TransportError as ex:  # pragma: no cover
+            raise Http400(detail='Data too large.') from ex
+
+        return facets
+
+    def _to_clean_facets(self, facets, remove_self=False):
+        _facets = []
+        for facet in facets:
+            _facet = facet[:2]
+            if remove_self:
+                if facet[0] != self.mnemonic:
+                    _facets.append(_facet)
+            else:
+                _facets.append(_facet)
+        return _facets
 
 
 class CelerySignalProcessor(RealTimeSignalProcessor):

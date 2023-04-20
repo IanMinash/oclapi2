@@ -106,6 +106,20 @@ class S3:
         return True
 
     @classmethod
+    def has_path(cls, prefix="/", delimiter="/"):
+        return len(cls.__fetch_keys(prefix, delimiter)) > 0
+
+    @classmethod
+    def get_last_key_from_path(cls, prefix="/", delimiter="/"):
+        keys = cls.__fetch_keys(prefix, delimiter)
+        key = (
+            sorted(keys, key=lambda k: k.get("LastModified"), reverse=True)[0]
+            if len(keys) > 1
+            else get(keys, "0")
+        )
+        return get(key, "Key")
+
+    @classmethod
     def delete_objects(cls, path):  # pragma: no cover
         try:
             s3_resource = cls.__resource()

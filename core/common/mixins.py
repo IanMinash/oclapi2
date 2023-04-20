@@ -18,8 +18,9 @@ from core.common.constants import HEAD, ACCESS_TYPE_NONE, INCLUDE_FACETS, \
     LIST_DEFAULT_LIMIT, HTTP_COMPRESS_HEADER, CSV_DEFAULT_LIMIT, FACETS_ONLY, INCLUDE_RETIRED_PARAM
 from core.common.permissions import HasPrivateAccess, HasOwnership, CanViewConceptDictionary, \
     CanViewConceptDictionaryVersion
+from .checksums import ChecksumModel
 from .utils import write_csv_to_s3, get_csv_from_s3, get_query_params_from_url_string, compact_dict_by_values, \
-    to_owner_uri, parse_updated_since_param, get_export_service
+    to_owner_uri, parse_updated_since_param, get_export_service, to_int, drop_version
 
 logger = logging.getLogger('oclapi')
 
@@ -30,7 +31,7 @@ class CustomPaginator:
         self.queryset = queryset
         self.total = total_count or self.queryset.count()
         self.page_size = int(page_size)
-        self.page_number = int(request.GET.get('page', '1') or '1')
+        self.page_number = to_int(request.GET.get('page', '1'), 1)
         if not is_sliced:
             bottom = (self.page_number - 1) * self.page_size
             top = bottom + self.page_size
@@ -318,14 +319,15 @@ class ConceptDictionaryCreateMixin(ConceptDictionaryMixin):
         permission = HasOwnership()
         if not permission.has_object_permission(request, self, self.parent_resource):
             return Response(status=status.HTTP_403_FORBIDDEN)
-        supported_locales = request.data.pop('supported_locales', '')
+        data = request.data.copy()
+        supported_locales = data.pop('supported_locales', '')
         if isinstance(supported_locales, str):
             supported_locales = compact(supported_locales.split(','))
 
         data = {
-            'mnemonic': request.data.get('id'),
+            'mnemonic': data.get('id'),
             'supported_locales': supported_locales,
-            'version': HEAD, **request.data, **{self.parent_resource.resource_type.lower(): self.parent_resource.id}
+            'version': HEAD, **data, **{self.parent_resource.resource_type.lower(): self.parent_resource.id}
         }
 
         serializer = self.get_serializer(data=data)
@@ -412,12 +414,51 @@ class SourceContainerMixin:
         return reverse('collection-list', kwargs={self.get_url_kwarg(): self.mnemonic})
 
 
-class SourceChildMixin:
+class SourceChildMixin(ChecksumModel):
+    class Meta:
+        abstract = True
+
+    def get_all_checksums(self):
+        return {
+            **super().get_all_checksums(),
+            'repo_versions': self.source_versions_checksum,
+        }
+
+    @property
+    def source_versions_checksum(self):
+        return self.generate_checksum(list(self.source_versions))
+
     @staticmethod
-    def user_criteria(user):
-        private_criteria = Q(public_access=ACCESS_TYPE_NONE)
-        owner_criteria = Q(Q(parent__user_id=user.id) | Q(parent__organization__members__id=user.id))
-        return ~private_criteria | Q(private_criteria & owner_criteria)
+    def is_strictly_equal(instance1, instance2):
+        return instance1.get_checksums() == instance2.get_checksums()
+
+    @staticmethod
+    def is_equal(instance1, instance2):
+        return instance1.get_basic_checksums() == instance2.get_basic_checksums()
+
+    def __eq__(self, other):
+        return self.__class__.is_equal(self, other)
+
+    def __hash__(self):
+        return super().__hash__()
+
+    def get_checksum_fields(self):
+        result = super().get_checksum_fields()
+
+        if not self.is_versioned_object:
+            result['uri'] = drop_version(self.uri)
+
+        return result
+
+    @staticmethod
+    def apply_user_criteria(queryset, user):
+        queryset = queryset.exclude(
+            Q(parent__user_id__isnull=False, public_access=ACCESS_TYPE_NONE) & ~Q(parent__user_id=user.id))
+        queryset = queryset.exclude(
+            Q(parent__organization_id__isnull=False, public_access=ACCESS_TYPE_NONE) &
+            ~Q(parent__organization__members__id=user.id)
+        )
+        return queryset
 
     @staticmethod
     def apply_attribute_based_filters(queryset, params):
@@ -637,6 +678,9 @@ class ConceptContainerExportMixin:
         if version.is_head and not request.user.is_staff:
             return Response(status=status.HTTP_405_METHOD_NOT_ALLOWED)
 
+        if version.is_exporting:
+            return Response(status=status.HTTP_208_ALREADY_REPORTED)
+
         if version.has_export():
             export_url = version.get_export_url()
 
@@ -651,12 +695,9 @@ class ConceptContainerExportMixin:
             response['Cache-Control'] = 'no-cache, no-store, must-revalidate'
             response['Pragma'] = 'no-cache'
             response['Expires'] = '0'
-            response['Last-Updated'] = version.last_child_update.isoformat()
+            response['Last-Updated'] = version.get_last_child_update_from_export_url(export_url)
             response['Last-Updated-Timezone'] = settings.TIME_ZONE_PLACE
             return response
-
-        if version.is_exporting:
-            return Response(status=status.HTTP_208_ALREADY_REPORTED)
 
         return Response(status=status.HTTP_204_NO_CONTENT)
 

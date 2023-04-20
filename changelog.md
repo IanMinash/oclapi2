@@ -1,3 +1,31 @@
+##### 2.3.8 - Mon Mar 27 05:14:47 2023 +0000
+- [OpenConceptLab/ocl_issues#1524](https://github.com/OpenConceptLab/ocl_issues/issues/1524) | getting Source mapped sources in separate APIs
+##### 2.3.7 - Thu Mar 23 09:03:07 2023 +0000
+Mon May 16 16:11:46 2022 +0530
+- [OpenConceptLab/ocl_issues#1524](https://github.com/OpenConceptLab/ocl_issues/issues/1524) | getting Source mapped sources in separate APIs
+##### 2.3.6 - Thu Mar 23 06:05:59 2023 +0000
+- skipping big import tests only on CI
+- running facets test on CI
+- [OpenConceptLab/ocl_issues#1524](https://github.com/OpenConceptLab/ocl_issues/issues/1524) | attempting test fix on CI
+- [OpenConceptLab/ocl_issues#1524](https://github.com/OpenConceptLab/ocl_issues/issues/1524) | attempting test fix on CI
+- [OpenConceptLab/ocl_issues#1524](https://github.com/OpenConceptLab/ocl_issues/issues/1524) | attempting test fix on CI
+- [OpenConceptLab/ocl_issues#1524](https://github.com/OpenConceptLab/ocl_issues/issues/1524) | attempting test fix on CI
+- [OpenConceptLab/ocl_issues#1524](https://github.com/OpenConceptLab/ocl_issues/issues/1524) | inspecting CI failure | added print for facets exception
+- [OpenConceptLab/ocl_issues#1524](https://github.com/OpenConceptLab/ocl_issues/issues/1524) | using ES facets for field distribution
+- [OpenConceptLab/ocl_issues#1524](https://github.com/OpenConceptLab/ocl_issues/issues/1524) | added index for retired counts
+##### 2.3.5 - Wed Mar 22 04:04:51 2023 +0000
+- [OpenConceptLab/ocl_issues#1458](https://github.com/OpenConceptLab/ocl_issues/issues/1458) | removed feature toggle
+- Fixing tests
+- [OpenConceptLab/ocl_issues#1521](https://github.com/OpenConceptLab/ocl_issues/issues/1521) | listing public criteria fix
+##### 2.3.4 - Fri Mar 17 04:18:25 2023 +0000
+- [OpenConceptLab/ocl_issues#1513](https://github.com/OpenConceptLab/ocl_issues/issues/1513) | concepts search in collection fix
+##### 2.3.3 - Fri Mar 17 02:50:49 2023 +0000
+- [OpenConceptLab/ocl_issues#1513](https://github.com/OpenConceptLab/ocl_issues/issues/1513) | concepts search in collection fix
+- Bug | collection concepts after search were not removable
+##### 2.3.2 - Wed Mar 15 04:24:47 2023 +0000
+- [OpenConceptLab/ocl_issues#1458](https://github.com/OpenConceptLab/ocl_issues/issues/1458) | sort_weight can be null
+- Reference filter schema to remove check from operation value
+- [OpenConceptLab/ocl_issues#1415](https://github.com/OpenConceptLab/ocl_issues/issues/1415) Implement automated import scripts for FHIR HL7 content
 ##### 2.3.0 - Mon Mar 13 10:36:40 2023 +0000
 ##### 2.2.79 - Mon Mar 13 10:36:40 2023 +0000
 - Bump whitenoise from 6.2.0 to 6.4.0 (#407)
