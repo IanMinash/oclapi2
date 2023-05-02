@@ -54,7 +54,7 @@ def write_csv_to_s3(data, is_owner, **kwargs):  # pragma: no cover
     key = get_downloads_path(is_owner) + zip_file.filename
     get_export_service().upload_file(
         key=key, file_path=os.path.abspath(zip_file.filename), binary=True,
-        metadata=dict(ContentType='application/zip'), headers={'content-type': 'application/zip'}
+        metadata={'ContentType': 'application/zip'}, headers={'content-type': 'application/zip'}
     )
     os.chdir(cwd)
     return get_export_service().url_for(key)
@@ -340,7 +340,7 @@ def write_export_file(
         export_service.delete_objects(version.generic_export_path(suffix=None))
 
     upload_status_code = export_service.upload_file(
-        key=s3_key, file_path=file_path, binary=True, metadata=dict(ContentType='application/zip'),
+        key=s3_key, file_path=file_path, binary=True, metadata={'ContentType': 'application/zip'},
         headers={'content-type': 'application/zip'}
     )
     logger.info(f'Upload response status: {str(upload_status_code)}')
@@ -380,7 +380,7 @@ def parse_bulk_import_task_id(task_id):
     :param task_id:
     :return: dictionary with uuid, username, queue
     """
-    task = dict(uuid=task_id[:37])
+    task = {'uuid': task_id[:37]}
     username = task_id[37:]
     queue_index = username.find('~')
     if queue_index != -1:
@@ -444,22 +444,7 @@ def queue_bulk_import(  # pylint: disable=too-many-arguments
     :param sub_task:
     :return: task
     """
-    task_id = str(uuid.uuid4()) + '-' + username
-
-    if username in ['root', 'ocladmin'] and import_queue != 'concurrent':
-        queue_id = 'bulk_import_root'
-        task_id += '~priority'
-    elif import_queue == 'concurrent':
-        queue_id = import_queue
-        task_id += '~' + import_queue
-    elif import_queue:
-        # assigning to one of 5 queues processed in order
-        queue_id = 'bulk_import_' + str(hash(username + import_queue) % BULK_IMPORT_QUEUES_COUNT)
-        task_id += '~' + import_queue
-    else:
-        # assigning randomly to one of 5 queues processed in order
-        queue_id = 'bulk_import_' + str(random.randrange(0, BULK_IMPORT_QUEUES_COUNT))
-        task_id += '~default'
+    queue_id, task_id = get_queue_task_names(import_queue, username)
 
     if inline:
         if sub_task:
@@ -480,6 +465,28 @@ def queue_bulk_import(  # pylint: disable=too-many-arguments
 
     from core.common.tasks import bulk_import
     return bulk_import.apply_async((to_import, username, update_if_exists), task_id=task_id, queue=queue_id)
+
+
+def get_queue_task_names(import_queue, username):
+    if username in ['root', 'ocladmin'] and import_queue != 'concurrent':
+        queue_id = 'bulk_import_root'
+        task_id = get_user_specific_task_id('priority', username)
+    elif import_queue == 'concurrent':
+        queue_id = import_queue
+        task_id = get_user_specific_task_id(import_queue, username)
+    elif import_queue:
+        # assigning to one of 5 queues processed in order
+        queue_id = 'bulk_import_' + str(hash(username + import_queue) % BULK_IMPORT_QUEUES_COUNT)
+        task_id = get_user_specific_task_id(import_queue, username)
+    else:
+        # assigning randomly to one of 5 queues processed in order
+        queue_id = 'bulk_import_' + str(random.randrange(0, BULK_IMPORT_QUEUES_COUNT))
+        task_id = get_user_specific_task_id('default', username)
+    return queue_id, task_id
+
+
+def get_user_specific_task_id(queue, username):
+    return str(uuid.uuid4()) + '-' + username + '~' + queue
 
 
 def drop_version(expression):
@@ -757,9 +764,9 @@ def es_id_in(search, ids):
 def get_es_wildcard_search_criterion(search_str, name_attr='name'):
     def get_query(_str):
         return es_Q(
-            "wildcard", id=dict(value=_str, boost=2)
+            "wildcard", id={'value': _str, 'boost': 2}
         ) | es_Q(
-            "wildcard", **{name_attr: dict(value=_str, boost=5)}
+            "wildcard", **{name_attr: {'value': _str, 'boost': 5}}
         ) | es_Q(
             "query_string", query=f"*{_str}*"
         )
@@ -887,6 +894,5 @@ def generic_sort(_list):
     def compare(item):
         if isinstance(item, (int, float, str, bool)):
             return item
-        else:
-            return str(item)
+        return str(item)
     return sorted(_list, key=compare)

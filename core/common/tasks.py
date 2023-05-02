@@ -16,8 +16,10 @@ from django_elasticsearch_dsl.registries import registry
 from pydash import get
 
 from core.celery import app
+from core.common import ERRBIT_LOGGER
 from core.common.constants import CONFIRM_EMAIL_ADDRESS_MAIL_SUBJECT, PASSWORD_RESET_MAIL_SUBJECT
 from core.common.utils import write_export_file, web_url, get_resource_class_from_resource_name, get_export_service
+from core.toggles.models import Toggle
 
 logger = get_task_logger(__name__)
 
@@ -53,15 +55,19 @@ def delete_source(source_id):
         return None
 
     try:
-        logger.info('Found source %s.  Beginning purge...', source.mnemonic)
+        logger.info('Found source %s', source.mnemonic)
+        logger.info('Beginning concepts purge...')
         source.batch_delete(source.concepts_set)
+        logger.info('Beginning mappings purge...')
         source.batch_delete(source.mappings_set)
+        logger.info('Beginning versions and self purge...')
         source.delete(force=True)
         logger.info('Delete complete!')
         return True
     except Exception as ex:
         logger.info('Source delete failed for %s with exception %s', source.mnemonic, ex.args)
-        return ex
+        ERRBIT_LOGGER.log(ex)
+        return False
 
 
 @app.task(base=QueueOnce)
@@ -82,7 +88,8 @@ def delete_collection(collection_id):
         return True
     except Exception as ex:
         logger.info('Collection delete failed for %s with exception %s', collection.mnemonic, ex.args)
-        return ex
+        ERRBIT_LOGGER.log(ex)
+        return False
 
 
 @app.task(base=QueueOnce, bind=True)
@@ -149,24 +156,20 @@ def add_references(  # pylint: disable=too-many-arguments,too-many-locals
 
     try:
         (added_references, errors) = collection.add_expressions(
-            data, user, cascade, transform_to_resource_version)
+            data, user, cascade, transform_to_resource_version, True)
     finally:
         head.remove_processing(self.request.id)
-
-    for ref in added_references:
-        if ref.concepts.exists():
-            from core.concepts.models import Concept
+    if collection.expansion_uri:
+        for ref in added_references:
             from core.concepts.documents import ConceptDocument
-            Concept.batch_index(ref.concepts, ConceptDocument)
-        if ref.mappings.exists():
-            from core.mappings.models import Mapping
             from core.mappings.documents import MappingDocument
-            Mapping.batch_index(ref.mappings, MappingDocument)
+            collection.batch_index(ref.concepts, ConceptDocument)
+            collection.batch_index(ref.mappings, MappingDocument)
     if errors:
         logger.info('Errors while adding references....')
         logger.info(errors)
 
-    return errors
+    return [reference.id for reference in added_references], errors
 
 
 def __handle_save(instance):
@@ -241,9 +244,9 @@ def bulk_import_parallel_inline(self, to_import, username, update_if_exists, thr
             parallel=threads, self_task_id=self.request.id
         )
     except JSONDecodeError as ex:
-        return dict(error=f"Invalid JSON ({ex.msg})")
+        return {'error': f"Invalid JSON ({ex.msg})"}
     except ValidationError as ex:
-        return dict(error=f"Invalid Input ({ex.message})")
+        return {'error': f"Invalid Input ({ex.message})"}
     return importer.run()
 
 
@@ -332,6 +335,11 @@ def seed_children_to_new_version(self, resource, obj_id, export=True, sync=False
             if is_source:
                 instance.seed_concepts(index=index)
                 instance.seed_mappings(index=index)
+                if Toggle.get('CHECKSUMS_TOGGLE'):
+                    if get(settings, 'TEST_MODE', False):
+                        set_source_children_checksums(instance.id)
+                    else:
+                        set_source_children_checksums.apply_async((instance.id,), queue='indexing')
             elif autoexpand:
                 instance.cascade_children_to_expansion(index=index, sync=sync)
 
@@ -660,3 +668,48 @@ def post_import_update_resource_counts():
             uncounted_mappings.filter(parent_id=source.id).update(_counted=True)
         except:  # pylint: disable=bare-except
             pass
+
+
+@app.task(ignore_result=True)
+def set_source_children_checksums(source_id):
+    from core.sources.models import Source
+    source = Source.objects.filter(id=source_id).first()
+    if not source:
+        return
+    for concept in source.concepts.filter():
+        concept.set_source_versions_checksum()
+    for mapping in source.mappings.filter():
+        mapping.set_source_versions_checksum()
+
+
+@app.task(ignore_result=True)
+def update_mappings_source(source_id):
+    # Updates mappings where mapping.to_source_url or mapping.from_source_url matches source url or canonical url
+    from core.sources.models import Source
+    source = Source.objects.filter(id=source_id).first()
+    if source:
+        source.update_mappings()
+
+
+@app.task(ignore_result=True)
+def update_mappings_concept(concept_id):
+    # Updates mappings where mapping.to_concept or mapping.from_concepts matches concept's mnemonic and parent
+    from core.concepts.models import Concept
+    concept = Concept.objects.filter(id=concept_id).first()
+    if concept:
+        concept.update_mappings()
+
+
+@app.task(ignore_result=True)
+def calculate_checksums(resource_type, resource_id):
+    model = get_resource_class_from_resource_name(resource_type)
+    if model:
+        is_source_child = model.__class__.__name__ in ('Concept', 'Mapping')
+        instance = model.objects.filter(id=resource_id).first()
+        if instance:
+            instance.set_checksums()
+            if is_source_child:
+                if not instance.is_latest_version:
+                    instance.get_latest_version().set_checksums()
+                if not instance.is_versioned_object:
+                    instance.versioned_object.set_checksums()

@@ -3,7 +3,7 @@ psycopg2==2.9.5
 gunicorn==20.1.0 #production server
 whitenoise==6.4.0 #serving swagger static files
 djangorestframework==3.14.0
-pylint==2.15.0
+pylint==2.17.2
 pydash==6.0.2
 django-cors-headers==3.14.0
 pyyaml==6.0
@@ -26,7 +26,7 @@ git+https://github.com/snyaggarwal/django-queryset-csv
 git+https://github.com/OpenConceptLab/ocldev
 coverage==6.5.0
 tblib==1.7.0
-django-ordered-model==3.7.1
+django-ordered-model==3.7.4
 django-health-check>=3.16.2
 markdown==3.4.1
 mock==5.0.1
@@ -35,4 +35,4 @@ django-cid==2.3
 django-dirtyfields==1.9.1
 jsonpath-ng==1.5.3
 mozilla-django-oidc==3.0.0
-django-celery-beat==2.4.0
+django-celery-beat==2.5.0

@@ -126,7 +126,7 @@ class S3:
             keys = cls.__fetch_keys(prefix=path)
             if keys:
                 s3_resource.meta.client.delete_objects(
-                    Bucket=settings.AWS_STORAGE_BUCKET_NAME, Delete=dict(Objects=keys)
+                    Bucket=settings.AWS_STORAGE_BUCKET_NAME, Delete={"Objects": keys}
                 )
         except:  # pylint: disable=bare-except
             pass
@@ -585,17 +585,17 @@ class OIDCAuthService(AbstractAuthService):
     def add_user(cls, user, username, password):
         response = requests.post(
             cls.USERS_URL,
-            json=dict(
-                enabled=True,
-                emailVerified=user.verified,
-                firstName=user.first_name,
-                lastName=user.last_name,
-                email=user.email,
-                username=user.username,
-                credentials=[
+            json={
+                "enabled": True,
+                "emailVerified": user.verified,
+                "firstName": user.first_name,
+                "lastName": user.last_name,
+                "email": user.email,
+                "username": user.username,
+                "credentials": [
                     cls.credential_representation_from_hash(hash_=user.password)
                 ],
-            ),
+            },
             verify=False,
             headers=OIDCAuthService.get_admin_headers(
                 username=username, password=password
@@ -610,12 +610,12 @@ class OIDCAuthService(AbstractAuthService):
     def get_admin_token(username, password):
         response = requests.post(
             OIDCAuthService.OIDP_ADMIN_TOKEN_URL,
-            data=dict(
-                grant_type="password",
-                username=username,
-                password=password,
-                client_id="admin-cli",
-            ),
+            data={
+                "grant_type": "password",
+                "username": username,
+                "password": password,
+                "client_id": "admin-cli",
+            },
             verify=False,
         )
         return response.json().get("access_token")
@@ -624,19 +624,19 @@ class OIDCAuthService(AbstractAuthService):
     def exchange_code_for_token(code, redirect_uri, client_id, client_secret):
         response = requests.post(
             settings.OIDC_OP_TOKEN_ENDPOINT,
-            data=dict(
-                grant_type="authorization_code",
-                client_id=client_id,
-                client_secret=client_secret,
-                code=code,
-                redirect_uri=redirect_uri,
-            ),
+            data={
+                "grant_type": "authorization_code",
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "code": code,
+                "redirect_uri": redirect_uri,
+            },
         )
         return response.json()
 
     @staticmethod
     def get_admin_headers(**kwargs):
-        return dict(Authorization=f"Bearer {OIDCAuthService.get_admin_token(**kwargs)}")
+        return {"Authorization": f"Bearer {OIDCAuthService.get_admin_token(**kwargs)}"}
 
     @staticmethod
     def create_user(_):

@@ -95,13 +95,14 @@ class Mapping(MappingValidationMixin, SourceChildMixin, VersionedModel):
     WAS_RETIRED = MAPPING_WAS_RETIRED
     WAS_UNRETIRED = MAPPING_WAS_UNRETIRED
 
-    CHECKSUM_EXCLUSIONS = [
-        'id', 'created_at', 'updated_at', 'version', 'released', 'is_latest_version', 'comment',
-        'created_by_id', 'updated_by_id', 'parent_id', 'versioned_object_id', '_counted', '_index',
-        'created_by', 'updated_by', 'parent', 'versioned_object', 'name',
-        'from_concept_id', 'to_concept_id', 'from_source_id', 'to_source_id',
-        'from_concept', 'to_concept', 'from_source', 'to_source',
+    CHECKSUM_INCLUSIONS = [
+        'extras', 'map_type',
+        'from_concept_code', 'from_concept_name',
+        'to_concept_code', 'to_concept_name'
     ]
+    CHECKSUM_TYPES = {
+        'meta', 'repo_versions', 'all'
+    }
 
     es_fields = {
         'id': {'sortable': True, 'filterable': True, 'exact': True},
@@ -306,7 +307,7 @@ class Mapping(MappingValidationMixin, SourceChildMixin, VersionedModel):
 
             parent_uri = to_parent_uri(expression)
             code = expression.replace(parent_uri, '').replace('concepts/', '').split('/')[0]
-            return dict(mnemonic=code)
+            return {'mnemonic': code}
 
         def get_source_info(parent_uri, child_uri, existing_version, concept):
             if not parent_uri and not child_uri:
@@ -397,10 +398,13 @@ class Mapping(MappingValidationMixin, SourceChildMixin, VersionedModel):
                 initial_version = Mapping.create_initial_version(self)
                 initial_version.sources.set([parent])
                 self.sources.set([parent])
+                self.set_checksums()
+                if self.from_concept_id:
+                    self.from_concept.set_mappings_checksum()
         except ValidationError as ex:
             self.errors.update(ex.message_dict)
         except IntegrityError as ex:
-            self.errors.update(dict(__all__=ex.args))
+            self.errors.update({'__all__': ex.args})
 
     @classmethod
     def persist_new(cls, data, user):
@@ -415,7 +419,7 @@ class Mapping(MappingValidationMixin, SourceChildMixin, VersionedModel):
         mapping.version = temp_version
         mapping.errors = {}
         if mapping.is_existing_in_parent():
-            mapping.errors = dict(__all__=[ALREADY_EXISTS])
+            mapping.errors = {'__all__': [ALREADY_EXISTS]}
             return mapping
         mapping.populate_fields_from_relations(url_params)
 
@@ -436,12 +440,14 @@ class Mapping(MappingValidationMixin, SourceChildMixin, VersionedModel):
             initial_version.sources.set([parent])
             mapping.sources.set([parent])
             mapping.set_checksums()
+            if mapping.from_concept_id:
+                mapping.from_concept.set_mappings_checksum()
             if mapping._counted is True:
                 parent.update_mappings_count()
         except ValidationError as ex:
             mapping.errors.update(ex.message_dict)
         except IntegrityError as ex:
-            mapping.errors.update(dict(__all__=ex.args))
+            mapping.errors.update({'__all__': ex.args})
 
         return mapping
 
@@ -500,6 +506,9 @@ class Mapping(MappingValidationMixin, SourceChildMixin, VersionedModel):
 
                     obj.sources.set([parent])
                     obj.set_checksums()
+                    obj.versioned_object.set_checksums()
+                    if obj.from_concept_id:
+                        obj.from_concept.set_mappings_checksum()
                     persisted = True
                     cls.resume_indexing()
 
@@ -539,7 +548,7 @@ class Mapping(MappingValidationMixin, SourceChildMixin, VersionedModel):
         latest_released_version = None
         is_latest_released = container_version == LATEST
         if is_latest_released:
-            filters = dict(user__username=user, organization__mnemonic=org)
+            filters = {'user__username': user, 'organization__mnemonic': org}
             if source:
                 from core.sources.models import Source
                 latest_released_version = Source.find_latest_released_version_by(

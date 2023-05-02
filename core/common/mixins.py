@@ -20,7 +20,7 @@ from core.common.permissions import HasPrivateAccess, HasOwnership, CanViewConce
     CanViewConceptDictionaryVersion
 from .checksums import ChecksumModel
 from .utils import write_csv_to_s3, get_csv_from_s3, get_query_params_from_url_string, compact_dict_by_values, \
-    to_owner_uri, parse_updated_since_param, get_export_service, to_int, drop_version
+    to_owner_uri, parse_updated_since_param, get_export_service, to_int
 
 logger = logging.getLogger('oclapi')
 
@@ -84,10 +84,12 @@ class CustomPaginator:
 
     @property
     def headers(self):
-        headers = dict(
-            num_found=self.total_count, num_returned=len(self.current_page_results),
-            pages=self.page_count, page_number=self.page_number
-        )
+        headers = {
+            'num_found': self.total_count,
+            'num_returned': len(self.current_page_results),
+            'pages': self.page_count,
+            'page_number': self.page_number
+        }
         if self.has_next():
             headers['next'] = self.get_next_page_url()
         if self.has_previous():
@@ -124,7 +126,7 @@ class ListWithHeadersMixin(ListModelMixin):
             return self.get_csv(request)
 
         if self.only_facets():
-            return Response(dict(facets=dict(fields=self.get_facets())))
+            return Response({'facets': {'fields': self.get_facets()}})
 
         if self.object_list is None:
             self.object_list = self.filter_queryset()
@@ -163,7 +165,7 @@ class ListWithHeadersMixin(ListModelMixin):
     def serialize_list(self, results, paginator=None):
         result_dict = self.get_serializer(results, many=True).data
         if self.should_include_facets():
-            data = dict(results=result_dict, facets=dict(fields=self.get_facets()))
+            data = {'results': result_dict, 'facets': {'fields': self.get_facets()}}
         elif hasattr(self.__class__, 'bundle_response'):
             data = self.bundle_response(result_dict, paginator)
         else:
@@ -424,9 +426,13 @@ class SourceChildMixin(ChecksumModel):
             'repo_versions': self.source_versions_checksum,
         }
 
+    def set_source_versions_checksum(self):
+        self.set_specific_checksums('repo_versions', self.source_versions_checksum)
+
     @property
     def source_versions_checksum(self):
-        return self.generate_checksum(list(self.source_versions))
+        checksums = [version.checksum for version in self.sources.exclude(version=HEAD)]
+        return self.generate_checksum(checksums) if checksums else None
 
     @staticmethod
     def is_strictly_equal(instance1, instance2):
@@ -435,20 +441,6 @@ class SourceChildMixin(ChecksumModel):
     @staticmethod
     def is_equal(instance1, instance2):
         return instance1.get_basic_checksums() == instance2.get_basic_checksums()
-
-    def __eq__(self, other):
-        return self.__class__.is_equal(self, other)
-
-    def __hash__(self):
-        return super().__hash__()
-
-    def get_checksum_fields(self):
-        result = super().get_checksum_fields()
-
-        if not self.is_versioned_object:
-            result['uri'] = drop_version(self.uri)
-
-        return result
 
     @staticmethod
     def apply_user_criteria(queryset, user):
@@ -632,7 +624,7 @@ class SourceChildMixin(ChecksumModel):
         return criteria
 
     def save(self, force_insert=False, force_update=False, using=None, update_fields=None):
-        result = super().save(force_insert, force_update, using, update_fields)
+        super().save(force_insert, force_update, using, update_fields)
 
         if self.is_latest_version and self._counted is False:
             if self.__class__.__name__ == 'Concept':
@@ -642,8 +634,6 @@ class SourceChildMixin(ChecksumModel):
 
             self._counted = True
             self.save(update_fields=['_counted'])
-
-        return result
 
     def collection_references_uris(self, collection):
         ids = self.collection_references(collection).values_list('id', flat=True)
@@ -686,7 +676,7 @@ class ConceptContainerExportMixin:
 
             no_redirect = request.query_params.get('noRedirect', False) in ['true', 'True', True]
             if no_redirect:
-                return Response(dict(url=export_url), status=status.HTTP_200_OK)
+                return Response({'url': export_url}, status=status.HTTP_200_OK)
 
             response = Response(status=status.HTTP_303_SEE_OTHER)
             response['Location'] = export_url
@@ -760,8 +750,7 @@ class ConceptContainerProcessingMixin:
         is_debug = request.query_params.get('debug', None) in ['true', True]
 
         if is_debug:
-            return Response(dict(is_processing=version.is_processing,
-                                 process_ids=version._background_process_ids))  # pylint: disable=protected-access
+            return Response({'is_processing': version.is_processing, 'process_ids': version._background_process_ids})  # pylint: disable=protected-access
 
         logger.debug('Processing flag requested for %s version %s', self.resource, version)
 

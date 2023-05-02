@@ -1,13 +1,15 @@
 import uuid
 
 from dirtyfields import DirtyFieldsMixin
+from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import models
 from django.db.models import UniqueConstraint, F, Max, Count
-from pydash import compact, get
+from pydash import get
 
 from core.common.models import ConceptContainerModel
 from core.common.services import PostgresQL
+from core.common.tasks import update_mappings_source
 from core.common.validators import validate_non_negative
 from core.concepts.models import ConceptName, Concept
 from core.sources.constants import SOURCE_TYPE, SOURCE_VERSION_TYPE, HIERARCHY_ROOT_MUST_BELONG_TO_SAME_SOURCE, \
@@ -16,6 +18,10 @@ from core.sources.constants import SOURCE_TYPE, SOURCE_VERSION_TYPE, HIERARCHY_R
 
 class Source(DirtyFieldsMixin, ConceptContainerModel):
     DEFAULT_AUTO_ID_START_FROM = 1
+    CHECKSUM_INCLUSIONS = ConceptContainerModel.CHECKSUM_INCLUSIONS + [
+        'hierarchy_meaning',
+        'source_type'
+    ]
 
     es_fields = {
         'source_type': {'sortable': True, 'filterable': True, 'facet': True, 'exact': True},
@@ -166,15 +172,20 @@ class Source(DirtyFieldsMixin, ConceptContainerModel):
         return self.custom_validation_schema is not None and self.active_concepts
 
     def update_mappings(self):
+        # Updates mappings where mapping.to_source_url or mapping.from_source_url matches source url or canonical url
         from core.mappings.models import Mapping
-        uris = compact([self.uri, self.canonical_url])
-        for mapping in Mapping.objects.filter(to_source__isnull=True, to_source_url__in=uris):
-            mapping.to_source = self
-            mapping.save()
+        from core.mappings.documents import MappingDocument
 
-        for mapping in Mapping.objects.filter(from_source__isnull=True, from_source_url__in=uris):
-            mapping.from_source = self
-            mapping.save()
+        uris = self.identity_uris
+
+        to_queryset = Mapping.objects.filter(to_source_url__in=uris)
+        from_queryset = Mapping.objects.filter(from_source_url__in=uris)
+
+        to_queryset.filter(to_source_id__isnull=True).update(to_source=self)
+        from_queryset.filter(from_source_id__isnull=True).update(from_source=self)
+
+        Mapping.batch_index(to_queryset.filter(to_source=self), MappingDocument)
+        Mapping.batch_index(from_queryset.filter(to_source=self), MappingDocument)
 
     def is_hierarchy_root_belonging_to_self(self):
         hierarchy_root = self.hierarchy_root
@@ -215,13 +226,13 @@ class Source(DirtyFieldsMixin, ConceptContainerModel):
         if hierarchy_root:
             children.append({**ConceptHierarchySerializer(hierarchy_root).data, 'root': True})
 
-        return dict(
-            id=self.mnemonic,
-            children=children,
-            count=total_count + (1 if hierarchy_root else 0),
-            offset=offset,
-            limit=limit
-        )
+        return {
+            'id': self.mnemonic,
+            'children': children,
+            'count': total_count + (1 if hierarchy_root else 0),
+            'offset': offset,
+            'limit': limit
+        }
 
     def set_active_concepts(self):
         queryset = self.concepts
@@ -238,7 +249,8 @@ class Source(DirtyFieldsMixin, ConceptContainerModel):
     def seed_concepts(self, index=True):
         head = self.head
         if head:
-            self.concepts.set(head.concepts.filter(is_latest_version=True))
+            concepts = head.concepts.filter(is_latest_version=True)
+            self.concepts.set(concepts)
             if index:
                 from core.concepts.documents import ConceptDocument
                 self.batch_index(self.concepts, ConceptDocument)
@@ -349,6 +361,12 @@ class Source(DirtyFieldsMixin, ConceptContainerModel):
             PostgresQL.drop_seq(self.concepts_external_id_seq_name)
             PostgresQL.drop_seq(self.mappings_mnemonic_seq_name)
             PostgresQL.drop_seq(self.mappings_external_id_seq_name)
+
+    def post_create_actions(self):
+        if get(settings, 'TEST_MODE', False):
+            update_mappings_source(self.id)
+        else:
+            update_mappings_source.delay(self.id)
 
     @property
     def last_concept_update(self):
@@ -474,8 +492,8 @@ class Source(DirtyFieldsMixin, ConceptContainerModel):
         ).first()
 
     def _get_map_type_distribution(self, filters, concept_field):
-        _result = dict(total=0, retired=0, active=0, concepts=0)
-        result = dict(**_result, map_types=[])
+        _result = {'total': 0, 'retired': 0, 'active': 0, 'concepts': 0}
+        result = {**_result, 'map_types': []}
 
         queryset = self.get_mappings_queryset().filter(**filters)
         queryset = queryset.values(
@@ -499,10 +517,10 @@ class Source(DirtyFieldsMixin, ConceptContainerModel):
         return result
 
     def get_from_source_map_type_distribution(self, from_source):
-        return self._get_map_type_distribution(dict(from_source_id=from_source.id), 'to_concept__versioned_object_id')
+        return self._get_map_type_distribution({'from_source_id': from_source.id}, 'to_concept__versioned_object_id')
 
     def get_to_source_map_type_distribution(self, to_source):
-        return self._get_map_type_distribution(dict(to_source_id=to_source.id), 'from_concept__versioned_object_id')
+        return self._get_map_type_distribution({'to_source_id': to_source.id}, 'from_concept__versioned_object_id')
 
     @property
     def from_sources(self):
@@ -600,13 +618,13 @@ class Source(DirtyFieldsMixin, ConceptContainerModel):
     def mappings_distribution(self):
         facets = self.get_mapping_facets()
 
-        return dict(
-            active=self.active_mappings,
-            retired=self.retired_mappings_count,
-            map_type=self._to_clean_facets(facets.mapType or []),
-            to_concept_source=self._to_clean_facets(facets.toConceptSource or [], True),
-            from_concept_source=self._to_clean_facets(facets.fromConceptSource or [], True),
-        )
+        return {
+            'active': self.active_mappings,
+            'retired': self.retired_mappings_count,
+            'map_type': self._to_clean_facets(facets.mapType or []),
+            'to_concept_source': self._to_clean_facets(facets.toConceptSource or [], True),
+            'from_concept_source': self._to_clean_facets(facets.fromConceptSource or [], True)
+        }
 
     def _get_resource_facet_filters(self, filters=None):
         _filters = {

@@ -9,12 +9,13 @@ from drf_yasg.utils import swagger_auto_schema
 from ocldev.oclcsvtojsonconverter import OclStandardCsvToJsonConverter
 from pydash import get
 from rest_framework import status
-from rest_framework.parsers import MultiPartParser, FormParser
+from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from core.celery import app
+from core.common.constants import DEPRECATED_API_HEADER
 from core.common.services import RedisService
 from core.common.swagger_parameters import update_if_exists_param, task_param, result_param, username_param, \
     file_upload_param, file_url_param, parallel_threads_param, verbose_param
@@ -27,16 +28,16 @@ def csv_file_data_to_input_list(file_content):
     return [row for row in csv.DictReader(io.StringIO(file_content))]  # pylint: disable=unnecessary-comprehension
 
 
-def import_response(request, import_queue, data, threads=None, inline=False):
+def import_response(request, import_queue, data, threads=None, inline=False, deprecated=False):  # pylint: disable=too-many-arguments
     if not data:
-        return Response(dict(exception=NO_CONTENT_TO_IMPORT), status=status.HTTP_400_BAD_REQUEST)
+        return Response({'exception': NO_CONTENT_TO_IMPORT}, status=status.HTTP_400_BAD_REQUEST)
 
     user = request.user
     username = user.username
     update_if_exists = request.GET.get('update_if_exists', 'true')
     if update_if_exists not in ['true', 'false']:
         return Response(
-            dict(exception=INVALID_UPDATE_IF_EXISTS),
+            {'exception': INVALID_UPDATE_IF_EXISTS},
             status=status.HTTP_400_BAD_REQUEST
         )
     update_if_exists = update_if_exists == 'true'
@@ -46,84 +47,23 @@ def import_response(request, import_queue, data, threads=None, inline=False):
     try:
         task = queue_bulk_import(data, import_queue, username, update_if_exists, threads, inline)
     except AlreadyQueued:
-        return Response(dict(exception=ALREADY_QUEUED), status=status.HTTP_409_CONFLICT)
+        return Response({'exception': ALREADY_QUEUED}, status=status.HTTP_409_CONFLICT)
     parsed_task = parse_bulk_import_task_id(task.id)
-    return Response(
-        dict(task=task.id, state=task.state, username=username, queue=parsed_task['queue']),
-        status=status.HTTP_202_ACCEPTED
-    )
+    response = Response({
+                            'task': task.id,
+                            'state': task.state,
+                            'username': username,
+                            'queue': parsed_task['queue']
+                        }, status=status.HTTP_202_ACCEPTED)
+    if deprecated:
+        response[DEPRECATED_API_HEADER] = True
+    return response
 
 
-class BulkImportFileUploadView(APIView):
-    permission_classes = (IsAuthenticated, )
-    parser_classes = (MultiPartParser, )
-
+class ImportRetrieveDestroyMixin(APIView):
     @swagger_auto_schema(
-        manual_parameters=[update_if_exists_param, file_upload_param],
+        manual_parameters=[task_param, result_param, username_param, verbose_param],
     )
-    def post(self, request, import_queue=None):
-        file = request.data.get('file', None)
-
-        if not file:
-            return Response(dict(exception=NO_CONTENT_TO_IMPORT), status=status.HTTP_400_BAD_REQUEST)
-
-        if is_csv_file(name=file.name):
-            try:
-                data = OclStandardCsvToJsonConverter(
-                    input_list=csv_file_data_to_input_list(file.read().decode('utf-8')),
-                    allow_special_characters=True
-                ).process()
-            except Exception as ex:  # pylint: disable=broad-except
-                return Response(dict(exception=f'Bad CSV ({str(ex)})'), status=status.HTTP_400_BAD_REQUEST)
-        else:
-            data = file.read()
-
-        return import_response(self.request, import_queue, data)
-
-
-class BulkImportFileURLView(APIView):
-    permission_classes = (IsAuthenticated, )
-    parser_classes = (MultiPartParser, )
-
-    @swagger_auto_schema(
-        manual_parameters=[update_if_exists_param, file_url_param],
-    )
-    def post(self, request, import_queue=None):
-        file = None
-        file_url = request.data.get('file_url')
-
-        try:
-            headers = {
-                'User-Agent': 'OCL'  # user-agent required by mod_security on some servers
-            }
-            file = requests.get(file_url, headers=headers)
-        except:  # pylint: disable=bare-except
-            pass
-
-        if not file:
-            return Response(dict(exception=NO_CONTENT_TO_IMPORT), status=status.HTTP_400_BAD_REQUEST)
-
-        if is_csv_file(name=file_url):
-            try:
-                data = OclStandardCsvToJsonConverter(
-                    input_list=csv_file_data_to_input_list(file.text), allow_special_characters=True).process()
-            except Exception as ex:  # pylint: disable=broad-except
-                return Response(dict(exception=f'Bad CSV ({str(ex)})'), status=status.HTTP_400_BAD_REQUEST)
-        else:
-            data = file.text
-
-        return import_response(self.request, import_queue, data)
-
-
-class BulkImportView(APIView):
-    @swagger_auto_schema(
-        manual_parameters=[update_if_exists_param],
-        request_body=openapi.Schema(type=openapi.TYPE_OBJECT)
-    )
-    def post(self, request, import_queue=None):
-        return import_response(self.request, import_queue, request.body)
-
-    @swagger_auto_schema(manual_parameters=[task_param, result_param, username_param, verbose_param])
     def get(
             self, request, import_queue=None
     ):  # pylint: disable=too-many-return-statements,too-many-locals,too-many-branches
@@ -151,22 +91,30 @@ class BulkImportView(APIView):
                 if result:
                     return Response(result.get('detailed_summary', None))
             if task.failed():
-                return Response(dict(exception=str(task.result)), status=status.HTTP_400_BAD_REQUEST)
+                return Response({'exception': str(task.result)}, status=status.HTTP_400_BAD_REQUEST)
             if task.state == 'STARTED':
                 service = RedisService()
                 if service.exists(task_id):
                     return Response(
-                        dict(
-                            details=service.get_formatted(task_id), task=task.id, state=task.state,
-                            username=username, queue=parsed_task['queue']
-                        ),
+                        {
+                            'details': service.get_formatted(task_id),
+                            'task': task.id,
+                            'state': task.state,
+                            'username': username,
+                            'queue': parsed_task['queue']
+                        },
                         status=status.HTTP_200_OK
                     )
             if task.state == 'PENDING' and not task_exists(task_id):
-                return Response(dict(exception='task ' + task_id + ' not found'), status=status.HTTP_404_NOT_FOUND)
+                return Response({'exception': 'task ' + task_id + ' not found'}, status=status.HTTP_404_NOT_FOUND)
 
             return Response(
-                dict(task=task.id, state=task.state, username=username, queue=parsed_task['queue']),
+                {
+                    'task': task.id,
+                    'state': task.state,
+                    'username': username,
+                    'queue': parsed_task['queue']
+                },
                 status=status.HTTP_202_ACCEPTED
             )
 
@@ -191,7 +139,7 @@ class BulkImportView(APIView):
             }
         except Exception as ex:
             return Response(
-                dict(detail='Flower service returned unexpected result. Maybe check healthcheck.', exception=str(ex)),
+                {'detail': 'Flower service returned unexpected result. Maybe check healthcheck.', 'exception': str(ex)},
                 status=status.HTTP_422_UNPROCESSABLE_ENTITY
             )
 
@@ -202,7 +150,12 @@ class BulkImportView(APIView):
             if user.is_staff or user.username == task['username']:
                 if (not import_queue or task['queue'] == import_queue) and \
                         (not username or task['username'] == username):
-                    details = dict(task=task_id, state=value['state'], queue=task['queue'], username=task['username'])
+                    details = {
+                        'task': task_id,
+                        'state': value['state'],
+                        'queue': task['queue'],
+                        'username': task['username']
+                    }
                     if value['state'] in ['RECEIVED', 'PENDING']:
                         result = AsyncResult(task_id)
                         if result.state and result.state != value['state']:
@@ -252,17 +205,26 @@ class BulkImportView(APIView):
                     celery_once.name = result.name
                     celery_once.once_backend.clear_lock(celery_once_key)
         except Exception as ex:
-            return Response(dict(errors=ex.args), status=status.HTTP_400_BAD_REQUEST)
+            return Response({'errors': ex.args}, status=status.HTTP_400_BAD_REQUEST)
 
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
-class BulkImportParallelInlineView(APIView):  # pragma: no cover
+# DEPRECATED
+class BulkImportParallelInlineView(APIView):
     permission_classes = (IsAuthenticated, )
-    parser_classes = (MultiPartParser, FormParser)
+    deprecated = True
+
+    def get_parsers(self):
+        if 'application/json' in [self.request.META.get('CONTENT_TYPE')]:
+            return [JSONParser()]
+        if self.request.method == 'POST':
+            return [MultiPartParser(), FormParser()]
+        return super().get_parsers()
 
     @swagger_auto_schema(
         manual_parameters=[update_if_exists_param, file_url_param, file_upload_param, parallel_threads_param],
+        deprecated=True
     )
     def post(self, request, import_queue=None):
         parallel_threads = request.data.get('parallel') or 5
@@ -288,7 +250,7 @@ class BulkImportParallelInlineView(APIView):  # pragma: no cover
             pass
 
         if not file_content and not is_data:
-            return Response(dict(exception=NO_CONTENT_TO_IMPORT), status=status.HTTP_400_BAD_REQUEST)
+            return Response({'exception': NO_CONTENT_TO_IMPORT}, status=status.HTTP_400_BAD_REQUEST)
 
         if file_name and is_csv_file(name=file_name):
             try:
@@ -297,21 +259,144 @@ class BulkImportParallelInlineView(APIView):  # pragma: no cover
                     allow_special_characters=True
                 ).process()
             except Exception as ex:  # pylint: disable=broad-except
-                return Response(dict(exception=f'Bad CSV ({str(ex)})'), status=status.HTTP_400_BAD_REQUEST)
+                return Response({'exception': f'Bad CSV ({str(ex)})'}, status=status.HTTP_400_BAD_REQUEST)
         elif file:
             data = file_content
         else:
             data = request.data.get('data')
+        return import_response(self.request, import_queue, data, parallel_threads, True, self.deprecated)
 
-        return import_response(self.request, import_queue, data, parallel_threads, True)
+
+class ImportView(BulkImportParallelInlineView, ImportRetrieveDestroyMixin):
+    deprecated = False
+
+    @swagger_auto_schema(
+        manual_parameters=[update_if_exists_param, file_url_param, file_upload_param, parallel_threads_param],
+    )
+    def post(self, request, import_queue=None):
+        return super().post(request, import_queue)
 
 
+# DEPRECATED
+class BulkImportFileUploadView(APIView):  # pragma: no cover
+    permission_classes = (IsAuthenticated, )
+    parser_classes = (MultiPartParser, )
+    deprecated = True
+
+    @swagger_auto_schema(
+        manual_parameters=[update_if_exists_param, file_upload_param],
+        deprecated=True
+    )
+    def post(self, request, import_queue=None):
+        file = request.data.get('file', None)
+
+        if not file:
+            return Response({'exception': NO_CONTENT_TO_IMPORT}, status=status.HTTP_400_BAD_REQUEST)
+
+        if is_csv_file(name=file.name):
+            try:
+                data = OclStandardCsvToJsonConverter(
+                    input_list=csv_file_data_to_input_list(file.read().decode('utf-8')),
+                    allow_special_characters=True
+                ).process()
+            except Exception as ex:  # pylint: disable=broad-except
+                return Response({'exception': f'Bad CSV ({str(ex)})'}, status=status.HTTP_400_BAD_REQUEST)
+        else:
+            data = file.read()
+
+        return import_response(request=self.request, import_queue=import_queue, data=data, deprecated=self.deprecated)
+
+
+# DEPRECATED
+class BulkImportFileURLView(APIView):  # pragma: no cover
+    permission_classes = (IsAuthenticated, )
+    parser_classes = (MultiPartParser, )
+    deprecated = True
+
+    @swagger_auto_schema(
+        manual_parameters=[update_if_exists_param, file_url_param],
+        deprecated=True
+    )
+    def post(self, request, import_queue=None):
+        file = None
+        file_url = request.data.get('file_url')
+
+        try:
+            headers = {
+                'User-Agent': 'OCL'  # user-agent required by mod_security on some servers
+            }
+            file = requests.get(file_url, headers=headers)
+        except:  # pylint: disable=bare-except
+            pass
+
+        if not file:
+            return Response({'exception': NO_CONTENT_TO_IMPORT}, status=status.HTTP_400_BAD_REQUEST)
+
+        if is_csv_file(name=file_url):
+            try:
+                data = OclStandardCsvToJsonConverter(
+                    input_list=csv_file_data_to_input_list(file.text), allow_special_characters=True).process()
+            except Exception as ex:  # pylint: disable=broad-except
+                return Response({'exception': f'Bad CSV ({str(ex)})'}, status=status.HTTP_400_BAD_REQUEST)
+        else:
+            data = file.text
+
+        return import_response(request=self.request, import_queue=import_queue, data=data, deprecated=self.deprecated)
+
+
+# DEPRECATED
+class BulkImportView(ImportRetrieveDestroyMixin):  # pragma: no cover
+    deprecated = True
+
+    @swagger_auto_schema(
+        manual_parameters=[update_if_exists_param],
+        request_body=openapi.Schema(type=openapi.TYPE_OBJECT),
+        deprecated=True
+    )
+    def post(self, request, import_queue=None):
+        return import_response(request=self.request, import_queue=import_queue, data=request.body, deprecated=True)
+
+    @swagger_auto_schema(
+        manual_parameters=[task_param, result_param, username_param, verbose_param],
+        deprecated=True
+    )
+    def get(
+            self, request, import_queue=None
+    ):
+        response = super().get(request, import_queue)
+        response[DEPRECATED_API_HEADER] = self.deprecated
+        return response
+
+    @staticmethod
+    @swagger_auto_schema(
+        request_body=openapi.Schema(
+            type=openapi.TYPE_OBJECT,
+            properties={
+                'task_id': openapi.Schema(
+                    type=openapi.TYPE_STRING, description='Task Id to be terminated (mandatory)',
+                ),
+                'signal': openapi.Schema(
+                    type=openapi.TYPE_STRING, description='Kill Signal', default='SIGKILL',
+                ),
+            }
+        ),
+        deprecated=True
+    )
+    def delete(request, _=None):  # pylint: disable=unused-argument
+        response = super().delete(request)
+        response[DEPRECATED_API_HEADER] = True
+        return response
+
+
+# DEPRECATED
 class BulkImportInlineView(APIView):  # pragma: no cover
     permission_classes = (IsAuthenticated, )
     parser_classes = (MultiPartParser, FormParser)
+    deprecated = True
 
     @swagger_auto_schema(
         manual_parameters=[update_if_exists_param, file_url_param, file_upload_param],
+        deprecated=True
     )
     def post(self, request, import_queue=None):
         file = None
@@ -336,7 +421,7 @@ class BulkImportInlineView(APIView):  # pragma: no cover
             pass
 
         if not file_content and not is_data:
-            return Response(dict(exception=NO_CONTENT_TO_IMPORT), status=status.HTTP_400_BAD_REQUEST)
+            return Response({'exception': NO_CONTENT_TO_IMPORT}, status=status.HTTP_400_BAD_REQUEST)
 
         if file_name and is_csv_file(name=file_name):
             try:
@@ -345,10 +430,10 @@ class BulkImportInlineView(APIView):  # pragma: no cover
                     allow_special_characters=True
                 ).process()
             except Exception as ex:  # pylint: disable=broad-except
-                return Response(dict(exception=f'Bad CSV ({str(ex)})'), status=status.HTTP_400_BAD_REQUEST)
+                return Response({'exception': f'Bad CSV ({str(ex)})'}, status=status.HTTP_400_BAD_REQUEST)
         elif file:
             data = file_content
         else:
             data = request.data.get('data')
 
-        return import_response(self.request, import_queue, data, None, True)
+        return import_response(self.request, import_queue, data, None, True, self.deprecated)

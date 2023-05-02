@@ -1,5 +1,5 @@
-from celery_once import AlreadyQueued
 from celery.result import AsyncResult
+from celery_once import AlreadyQueued
 from django.conf import settings
 from django.contrib.contenttypes.fields import GenericRelation
 from django.contrib.postgres.fields import ArrayField
@@ -13,7 +13,7 @@ from django.utils.functional import cached_property
 from django_elasticsearch_dsl.registries import registry
 from django_elasticsearch_dsl.signals import RealTimeSignalProcessor
 from elasticsearch import TransportError
-from pydash import get
+from pydash import get, compact
 
 from core.common.tasks import update_collection_active_concepts_count, update_collection_active_mappings_count, \
     delete_s3_objects
@@ -21,6 +21,7 @@ from core.common.utils import reverse_resource, reverse_resource_version, parse_
     to_parent_uri, is_canonical_uri, get_export_service, from_string_to_date
 from core.common.utils import to_owner_uri
 from core.settings import DEFAULT_LOCALE
+from .checksums import ChecksumModel
 from .constants import (
     ACCESS_TYPE_CHOICES, DEFAULT_ACCESS_TYPE, NAMESPACE_REGEX,
     ACCESS_TYPE_VIEW, ACCESS_TYPE_EDIT, SUPER_ADMIN_USER_ID,
@@ -334,7 +335,7 @@ class VersionedModel(BaseResourceModel):
         return drop_version(self.uri) + 'versions/'
 
 
-class ConceptContainerModel(VersionedModel):
+class ConceptContainerModel(VersionedModel, ChecksumModel):
     """
     A sub-resource is an object that exists within the scope of its parent resource.
     Its mnemonic is unique within the scope of its parent resource.
@@ -364,6 +365,13 @@ class ConceptContainerModel(VersionedModel):
     custom_validation_schema = models.CharField(
         choices=VALIDATION_SCHEMAS, default=DEFAULT_VALIDATION_SCHEMA, max_length=100
     )
+
+    CHECKSUM_INCLUSIONS = [
+        'canonical_url',
+        'extras', 'released', 'retired',
+        'default_locale', 'supported_locales',
+        'website', 'custom_validation_schema',
+    ]
 
     class Meta:
         abstract = True
@@ -501,7 +509,7 @@ class ConceptContainerModel(VersionedModel):
         elif self.is_latest_version:
             prev_version = self.prev_version
             if not force and not prev_version:
-                raise ValidationError(dict(detail=CANNOT_DELETE_ONLY_VERSION))
+                raise ValidationError({'detail': CANNOT_DELETE_ONLY_VERSION})
             if prev_version:
                 prev_version.is_latest_version = True
                 prev_version.save()
@@ -571,6 +579,10 @@ class ConceptContainerModel(VersionedModel):
     def should_auto_expand(self):
         return True
 
+    @property
+    def identity_uris(self):
+        return compact([self.uri, self.canonical_url])
+
     @classmethod
     def persist_new(cls, obj, created_by, **kwargs):
         errors = {}
@@ -598,9 +610,8 @@ class ConceptContainerModel(VersionedModel):
         obj.version = HEAD
         try:
             obj.save(**kwargs)
-            obj.update_mappings()
-            if obj.should_auto_expand:
-                obj.cascade_children_to_expansion(index=False)
+            if obj.id:
+                obj.post_create_actions()
             persisted = True
         except IntegrityError as ex:
             errors.update({'__all__': ex.args})
@@ -692,9 +703,11 @@ class ConceptContainerModel(VersionedModel):
             try:
                 validator.validate(concept)
             except ValidationError as validation_error:
-                concept_validation_error = dict(
-                    mnemonic=concept.mnemonic, url=concept.url, errors=validation_error.message_dict
-                )
+                concept_validation_error = {
+                    'mnemonic': concept.mnemonic,
+                    'url': concept.url,
+                    'errors': validation_error.message_dict
+                }
                 failed_concept_validations.append(concept_validation_error)
 
         return failed_concept_validations
@@ -901,31 +914,31 @@ class ConceptContainerModel(VersionedModel):
     @property
     def concepts_distribution(self):
         facets = self.get_concept_facets()
-        return dict(
-            active=self.active_concepts,
-            retired=self.retired_concepts_count,
-            concept_class=self._to_clean_facets(facets.conceptClass or []),
-            datatype=self._to_clean_facets(facets.datatype or []),
-            locale=self._to_clean_facets(facets.locale or []),
-            name_type=self._to_clean_facets(facets.nameTypes or [])
-        )
+        return {
+            'active': self.active_concepts,
+            'retired': self.retired_concepts_count,
+            'concept_class': self._to_clean_facets(facets.conceptClass or []),
+            'datatype': self._to_clean_facets(facets.datatype or []),
+            'locale': self._to_clean_facets(facets.locale or []),
+            'name_type': self._to_clean_facets(facets.nameTypes or [])
+        }
 
     @property
     def mappings_distribution(self):
         facets = self.get_mapping_facets()
 
-        return dict(
-            active=self.active_mappings,
-            retired=self.retired_mappings_count,
-            map_type=self._to_clean_facets(facets.mapType or []),
-        )
+        return {
+            'active': self.active_mappings,
+            'retired': self.retired_mappings_count,
+            'map_type': self._to_clean_facets(facets.mapType or [])
+        }
 
     @property
     def versions_distribution(self):
-        return dict(
-            total=self.num_versions,
-            released=self.released_versions_count,
-        )
+        return {
+            'total': self.num_versions,
+            'released': self.released_versions_count
+        }
 
     def get_name_locales_queryset(self):
         from core.concepts.models import ConceptName
@@ -936,7 +949,7 @@ class ConceptContainerModel(VersionedModel):
         locales = self.get_name_locales_queryset()
         locales_total = locales.distinct('locale').count()
         names_total = locales.distinct('type').count()
-        return dict(locales=locales_total, names=names_total)
+        return {'locales': locales_total, 'names': names_total}
 
     def get_name_locale_distribution(self):
         return self._get_distribution(self.get_name_locales_queryset(), 'locale')

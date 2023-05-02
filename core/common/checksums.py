@@ -2,6 +2,7 @@ import json
 import hashlib
 from uuid import UUID
 
+from django.conf import settings
 from django.db import models
 from pydash import get
 
@@ -17,22 +18,57 @@ class ChecksumModel(models.Model):
 
     CHECKSUM_EXCLUSIONS = []
     CHECKSUM_INCLUSIONS = []
+    CHECKSUM_TYPES = {'meta'}
+    BASIC_CHECKSUM_TYPES = {'meta'}
     METADATA_CHECKSUM_KEY = 'meta'
     ALL_CHECKSUM_KEY = 'all'
 
-    def get_checksums(self):
+    def get_checksums(self, basic=False, queue=False):
         if Toggle.get('CHECKSUMS_TOGGLE'):
-            if self.checksums:
+            if self.checksums and self.has_checksums(basic):
                 return self.checksums
-
-            self.set_checksums()
+            if queue:
+                self.queue_checksum_calculation()
+                return self.checksums or {}
+            if basic:
+                self.set_basic_checksums()
+            else:
+                self.set_checksums()
 
             return self.checksums
+        return None
+
+    def queue_checksum_calculation(self):
+        from core.common.tasks import calculate_checksums
+        if get(settings, 'TEST_MODE', False):
+            calculate_checksums(self.__class__.__name__, self.id)
+            self.refresh_from_db()
+        else:
+            calculate_checksums.delay(self.__class__.__name__, self.id)
+
+    def set_specific_checksums(self, checksum_type, checksum):
+        self.checksums = self.checksums or {}
+        self.checksums[checksum_type] = checksum
+        self.save(update_fields=['checksums'])
+
+    def has_checksums(self, basic=False):
+        return self.has_basic_checksums() if basic else self.has_all_checksums()
+
+    def has_all_checksums(self):
+        return set(self.checksums.keys()) - set(self.CHECKSUM_TYPES) == set()
+
+    def has_basic_checksums(self):
+        return set(self.checksums.keys()) - set(self.BASIC_CHECKSUM_TYPES) == set()
 
     def set_checksums(self):
         if Toggle.get('CHECKSUMS_TOGGLE'):
             self.checksums = self._calculate_checksums()
-            self.save()
+            self.save(update_fields=['checksums'])
+
+    def set_basic_checksums(self):
+        if Toggle.get('CHECKSUMS_TOGGLE'):
+            self.checksums = self.get_basic_checksums()
+            self.save(update_fields=['checksums'])
 
     @property
     def checksum(self):
@@ -43,21 +79,15 @@ class ChecksumModel(models.Model):
             self.get_checksums()
 
             return self.checksums.get(self.METADATA_CHECKSUM_KEY)
+        return None
 
     def get_checksum_fields(self):
-        result = {
-            field.name: getattr(
-                self, field.name
-            ) for field in self._meta.fields if field.name not in [*self.CHECKSUM_EXCLUSIONS, 'checksums', 'checksum']
-        }
-        for field in self.CHECKSUM_INCLUSIONS:
-            result[field] = getattr(self, field)
-
-        return result
+        return {field: getattr(self, field) for field in self.CHECKSUM_INCLUSIONS}
 
     def get_basic_checksums(self):
         if Toggle.get('CHECKSUMS_TOGGLE'):
             return {self.METADATA_CHECKSUM_KEY: self._calculate_meta_checksum()}
+        return None
 
     def get_all_checksums(self):
         return self.get_basic_checksums()
@@ -67,10 +97,10 @@ class ChecksumModel(models.Model):
         return Checksum.generate(data)
 
     @staticmethod
-    def generate_queryset_checksum(queryset):
+    def generate_queryset_checksum(queryset, basic=False):
         _checksums = []
         for instance in queryset:
-            instance.get_checksums()
+            instance.get_checksums(basic)
             _checksums.append(instance.checksum)
         if len(_checksums) == 1:
             return _checksums[0]

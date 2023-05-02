@@ -35,6 +35,10 @@ from core.mappings.models import Mapping
 class Collection(ConceptContainerModel):
     OBJECT_TYPE = COLLECTION_TYPE
     OBJECT_VERSION_TYPE = COLLECTION_VERSION_TYPE
+    CHECKSUM_INCLUSIONS = ConceptContainerModel.CHECKSUM_INCLUSIONS + [
+        'collection_type'
+    ]
+
     es_fields = {
         'collection_type': {'sortable': True, 'filterable': True, 'facet': True, 'exact': True},
         'mnemonic': {'sortable': True, 'filterable': True, 'exact': True},
@@ -133,6 +137,10 @@ class Collection(ConceptContainerModel):
 
         return self.autoexpand
 
+    def post_create_actions(self):
+        if self.should_auto_expand:
+            self.cascade_children_to_expansion(index=False)
+
     def validate(self, reference):
         if self.should_auto_expand:
             reference.full_clean()
@@ -166,7 +174,7 @@ class Collection(ConceptContainerModel):
         names = concept.names.filter(**{attribute: value})
 
         for name in names:
-            validation_error = dict(names=[error_message])
+            validation_error = {'names': [error_message]}
             # making sure names in the submitted concept meet the same rule
             name_key = name.locale + name.name
             if name_key in matching_names_in_concept:
@@ -180,29 +188,33 @@ class Collection(ConceptContainerModel):
 
     @transaction.atomic
     def add_expressions(
-            self, data, user, cascade=False, transform=False):
+            self, data, user, cascade=False, transform=False, _async=False):
         parser = CollectionReferenceParser(data, transform, cascade, user)
         parser.parse()
         parser.to_reference_structure()
         references = parser.to_objects()
-        return self.add_references(references, user)
+        return self.add_references(references, user, _async)
 
-    def add_references(self, references, user=None):
+    def add_references(self, references, user=None, _async=False):
         errors = {}
         added_references = []
+        total_references = []
         for reference in references:
             reference.expression = reference.build_expression()
+            total_references += reference.generate_references()
+        total_references = CollectionReference.dedupe_by_expression(total_references)
+        for reference in total_references:
             reference.collection = self
             reference.created_by = user
-            for _reference in reference.generate_references():
-                try:
-                    self.validate(_reference)
-                    _reference.save()
-                except Exception as ex:
-                    errors[_reference.expression] = ex.messages if hasattr(ex, 'messages') else ex
-                    continue
-                if _reference.id:
-                    added_references.append(_reference)
+            reference._async = _async  # pylint: disable=protected-access
+            try:
+                self.validate(reference)
+                reference.save()
+            except Exception as ex:
+                errors[reference.expression] = ex.messages if hasattr(ex, 'messages') else ex
+                continue
+            if reference.id:
+                added_references.append(reference)
 
         if self.expansion_uri:
             self.expansion.add_references(added_references)
@@ -589,6 +601,10 @@ class CollectionReference(models.Model):
                 self.expression = mapping.uri
         return queryset
 
+    @staticmethod
+    def dedupe_by_expression(references):
+        return list({reference.expression: reference for reference in references}.values())
+
     def generate_references(self):
         references = []
         if self.should_generate_multiple_references():
@@ -649,7 +665,8 @@ class CollectionReference(models.Model):
             'cascade_levels': 1 if self.cascade == method else get(self.cascade, 'cascade_levels', ALL),
         }
         if is_dict:
-            for attr in ['cascade_mappings', 'cascade_hierarchy', 'reverse', 'max_results']:
+            for attr in ['cascade_mappings', 'cascade_hierarchy', 'reverse', 'max_results', 'include_retired',
+                         'reverse', 'omit_if_exists_in']:
                 if attr in self.cascade:
                     cascade_params[attr] = get(self.cascade, attr)
             map_types = get(self.cascade, 'map_types', None)
@@ -658,6 +675,8 @@ class CollectionReference(models.Model):
             cascade_params['map_types'] = map_types
             cascade_params['exclude_map_types'] = exclude_map_types
             cascade_params['return_map_types'] = return_map_types
+        if get(self, '_async'):
+            cascade_params['max_results'] = None
         return cascade_params
 
     def __is_exact_search_filter(self):
@@ -745,7 +764,7 @@ class CollectionReference(models.Model):
 
     def clean(self):
         if not self.is_valid_filter():
-            raise ValidationError(dict(filter=['Invalid filter schema.']))
+            raise ValidationError({'filter': ['Invalid filter schema.']})
 
         self.original_expression = str(self.expression)
         if self.transform and self.transform.lower() != TRANSFORM_TO_RESOURCE_VERSIONS:
@@ -961,13 +980,13 @@ class Expansion(BaseResourceModel):
             concepts = reference.concepts
             if concepts.exists():
                 index_concepts = True
-                filters = dict(id__in=list(concepts.values_list('id', flat=True)))
+                filters = {'id__in': list(concepts.values_list('id', flat=True))}
                 self.concepts.set(self.concepts.exclude(**filters))
                 batch_index_resources.apply_async(('concept', filters), queue='indexing')
             mappings = reference.mappings
             if mappings.exists():
                 index_mappings = True
-                filters = dict(id__in=list(mappings.values_list('id', flat=True)))
+                filters = {'id__in': list(mappings.values_list('id', flat=True))}
                 self.mappings.set(self.mappings.exclude(**filters))
                 batch_index_resources.apply_async(('mapping', filters), queue='indexing')
 
@@ -985,14 +1004,13 @@ class Expansion(BaseResourceModel):
         mappings_filters = None
         if expressions == ALL:
             if self.concepts.exists():
-                concepts_filters = dict(id__in=list(self.concepts.values_list('id', flat=True)))
+                concepts_filters = {'id__in': list(self.concepts.values_list('id', flat=True))}
                 self.concepts.clear()
             if self.mappings.exists():
-                mappings_filters = dict(id__in=list(self.mappings.values_list('id', flat=True)))
+                mappings_filters = {'id__in': list(self.mappings.values_list('id', flat=True))}
                 self.mappings.clear()
         else:
-            concepts_filters = dict(uri__in=expressions)
-            mappings_filters = dict(uri__in=expressions)
+            concepts_filters = mappings_filters = {'uri__in': expressions}
             self.concepts.set(self.concepts.exclude(**concepts_filters))
             self.mappings.set(self.mappings.exclude(**mappings_filters))
 
@@ -1240,7 +1258,7 @@ class ExpansionParameter:
 
 class ExpansionActiveParameter(ExpansionParameter):
     before_filter = True
-    default_filters = dict(is_active=True, retired=False)
+    default_filters = {'is_active': True, 'retired': False}
 
     @property
     def filters(self):
@@ -1280,7 +1298,7 @@ class ExpansionSystemParameter(ExpansionParameter):
             version = None
             if '|' in system:
                 canonical_url, version = system.split('|')
-            filters = dict(canonical_url=canonical_url)
+            filters = {'canonical_url': canonical_url}
             if version:
                 filters['version'] = version
             criterion |= models.Q(**filters)
@@ -1329,9 +1347,9 @@ class ExpansionDateParameter(ExpansionIncludeSystemParameter):
     @staticmethod
     def get_date_filter(date):
         if date.count('-') >= 3 or date.count(":"):
-            return dict(revision_date=date)
+            return {'revision_date': date}
         parts = date.split('-')
-        filters = dict(revision_date__year=parts[0])
+        filters = {'revision_date__year': parts[0]}
         if len(parts) > 1:
             filters['revision_date__month'] = parts[1]
         if len(parts) > 2:

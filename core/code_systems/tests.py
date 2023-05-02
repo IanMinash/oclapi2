@@ -3,6 +3,7 @@ import json
 from rest_framework.test import APIClient
 
 from core.code_systems.serializers import CodeSystemDetailSerializer
+from core.code_systems.views import CodeSystemLookupNotFoundError
 from core.common.tests import OCLTestCase
 from core.concepts.models import Concept
 from core.concepts.tests.factories import ConceptFactory
@@ -22,7 +23,7 @@ class CodeSystemTest(OCLTestCase):
         self.org_source_v1 = OrganizationSourceFactory.build(
             version='v1', mnemonic=self.org_source.mnemonic, organization=self.org_source.parent)
         Source.persist_new_version(self.org_source_v1, self.org_source.created_by)
-        self.concept_1 = ConceptFactory(parent=self.org_source, names=1, name__name="concept_1_name")
+        self.concept_1 = ConceptFactory(parent=self.org_source, names=1, names__name="concept_1_name")
         self.concept_2 = ConceptFactory(parent=self.org_source)
         self.org_source_v2 = OrganizationSourceFactory.build(
             version='v2', mnemonic=self.org_source.mnemonic, organization=self.org_source.parent)
@@ -185,6 +186,34 @@ class CodeSystemTest(OCLTestCase):
     def test_lookup_for_code_system(self):
         response = self.client.get(f'/fhir/CodeSystem/$lookup/'
                                    f'?system={self.org_source.canonical_url}'
+                                   f'&code={self.concept_1.mnemonic}')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertJSONEqual(json.dumps(response.data), json.dumps(
+            {'resourceType': 'Parameters', 'parameter': [
+                {'name': 'name', 'valueString': self.org_source.mnemonic},
+                {'name': 'version', 'valueString': self.org_source_v2.version},
+                {'name': 'display', 'valueString': self.concept_1.display_name}]}))
+
+    def test_lookup_for_empty_code_system(self):
+        response = self.client.get('/fhir/CodeSystem/$lookup/?system=&code=')
+
+        self.assertEqual(response.status_code, 400)
+        self.assertJSONEqual(json.dumps(response.data), json.dumps(CodeSystemLookupNotFoundError().detail))
+
+    def test_lookup_for_code_system_with_new_canonical(self):
+        self.org_source.canonical_url = '/new/url'
+        Source.save(self.org_source)
+
+        response = self.client.get(f'/fhir/CodeSystem/$lookup/'
+                                   f'?system={self.org_source.canonical_url}'
+                                   f'&code={self.concept_1.mnemonic}')
+
+        self.assertEqual(response.status_code, 400)
+        self.assertJSONEqual(json.dumps(response.data), json.dumps(CodeSystemLookupNotFoundError().detail))
+
+        response = self.client.get(f'/fhir/CodeSystem/$lookup/'
+                                   f'?system={self.org_source_v1.canonical_url}'
                                    f'&code={self.concept_1.mnemonic}')
 
         self.assertEqual(response.status_code, 200)
