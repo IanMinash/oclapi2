@@ -1018,12 +1018,13 @@ class Expansion(BaseResourceModel):
             batch_index_resources.apply_async(('concept', concepts_filters), queue='indexing')
             batch_index_resources.apply_async(('mapping', mappings_filters), queue='indexing')
 
-    def add_references(self, references, index=True, is_adding_all_references=False, attempt_reevaluate=True):  # pylint: disable=too-many-locals
+    def add_references(self, references, index=True, is_adding_all=False, attempt_reevaluate=True):  # pylint: disable=too-many-locals,too-many-statements
         include_refs, exclude_refs = self.to_ref_list_separated(references)
         resolved_valueset_versions = []
         resolved_system_versions = []
+        _system_version_cache = {}
 
-        if not is_adding_all_references:
+        if not is_adding_all:
             existing_exclude_refs = self.collection_version.references.exclude(
                 include=True).exclude(id__in=[ref.id for ref in exclude_refs])
             if isinstance(exclude_refs, QuerySet):
@@ -1031,51 +1032,66 @@ class Expansion(BaseResourceModel):
             else:
                 exclude_refs += [*existing_exclude_refs.all()]
 
-        index_concepts = False
-        index_mappings = False
+        index_concepts = index_mappings = False
+
+        # attempt_reevaluate is False for delete reference(s)
         should_reevaluate = attempt_reevaluate and not self.is_auto_generated
+
         include_system_versions = []
         system_versions = self.parameters.get(ExpansionParameters.INCLUDE_SYSTEM)
         if should_reevaluate and system_versions:
             for system_version in compact(system_versions.split(',')):
-                version = ConceptContainerModel.resolve_reference_expression(system_version.strip())
+                _system = system_version.strip()
+                _cache_key = f"NONE-{_system}-NONE"
+                version = ConceptContainerModel.resolve_reference_expression(_system)
+                _system_version_cache[_cache_key] = version
                 if version.id:
                     include_system_versions.append(version)
 
+        def get_ref_system_version(ref):
+            if ref.system:
+                __cache_key = f"{ref.namespace or 'NONE'}-{ref.system}-{ref.version or 'NONE'}"
+                if __cache_key not in _system_version_cache:
+                    _system_version_cache[__cache_key] = ref.resolve_system_version
+                return _system_version_cache[__cache_key]
+            return None
+
         def get_ref_results(ref):
-            # attempt_reevaluate is False for delete reference(s)
             nonlocal resolved_valueset_versions
             nonlocal resolved_system_versions
             resolved_valueset_versions += ref.resolve_valueset_versions
+            ref_system_versions = []
+            should_use_ref_system_version = True
             for _system_version in include_system_versions:
                 if ref.can_compute_against_system_version(_system_version):
-                    resolved_system_versions.append(_system_version)
+                    ref_system_versions.append(_system_version)
+                    should_use_ref_system_version = False
 
-            resolved_system_versions.append(ref.resolve_system_version)
+            if should_use_ref_system_version:
+                _system_version = get_ref_system_version(ref)
+                if _system_version:
+                    ref_system_versions.append(_system_version)
+            if ref_system_versions:
+                ref_system_versions = list(set(ref_system_versions))
 
             _concepts = Concept.objects.none()
             _mappings = Mapping.objects.none()
 
             if should_reevaluate:
-                for _system_version in resolved_system_versions:
-                    __concepts, __mappings = ref.get_concepts(_system_version)
-                    _concepts = Concept.objects.filter(
-                        id__in=list(
-                            _concepts.union(__concepts).values_list('id', flat=True)
+                for _system_version in ref_system_versions:
+                    if ref.is_mapping:
+                        _mappings = _mappings.union(ref.get_mappings(_system_version))
+                    else:
+                        __concepts, __mappings = ref.get_concepts(_system_version)
+                        _concepts = Concept.objects.filter(
+                            id__in=_concepts.union(__concepts).values_list('id', flat=True)
                         )
-                    )
-                    _mappings = Mapping.objects.filter(
-                        id__in=list(
-                            _mappings.union(
-                                __mappings
-                            ).union(
-                                ref.get_mappings(_system_version)
-                            ).values_list('id', flat=True)
-                        )
-                    )
+                        _mappings = _mappings.union(__mappings)
+                    _mappings = Mapping.objects.filter(id__in=_mappings.values_list('id', flat=True))
             else:
-                _concepts = ref.concepts.all()
-                _mappings = ref.mappings.all()
+                _concepts = ref.concepts.filter()
+                _mappings = ref.mappings.filter()
+            resolved_system_versions += ref_system_versions
             return _concepts, _mappings
 
         for reference in include_refs:

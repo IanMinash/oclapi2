@@ -5,7 +5,6 @@ from django.contrib.auth.models import AbstractUser
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError
 from django.db import models
-from django.urls import reverse
 from rest_framework.authtoken.models import Token
 
 from core.common.mixins import SourceContainerMixin
@@ -48,6 +47,9 @@ class UserProfile(AbstractUser, BaseModel, CommonLogoModel, SourceContainerMixin
         'is_admin': {'sortable': False, 'filterable': False, 'exact': False, 'facet': True}
     }
 
+    def calculate_uri(self):
+        return f"/users/{self.username}/"
+
     @staticmethod
     def get_search_document():
         from core.users.documents import UserProfileDocument
@@ -84,7 +86,7 @@ class UserProfile(AbstractUser, BaseModel, CommonLogoModel, SourceContainerMixin
 
     @property
     def organizations_url(self):
-        return reverse('userprofile-orgs', kwargs={'user': self.mnemonic})
+        return f"/users/{self.mnemonic}/orgs/"
 
     def update_password(self, password=None, hashed_password=None):
         if not password and not hashed_password:
