@@ -8,6 +8,7 @@ from core.common.constants import INCLUDE_INVERSE_MAPPINGS_PARAM, INCLUDE_MAPPIN
     CREATE_PARENT_VERSION_QUERY_PARAM, INCLUDE_HIERARCHY_PATH, INCLUDE_PARENT_CONCEPT_URLS, \
     INCLUDE_CHILD_CONCEPT_URLS, HEAD, INCLUDE_SUMMARY, INCLUDE_VERBOSE_REFERENCES, VERBOSE_PARAM
 from core.common.fields import EncodedDecodedCharField
+from core.common.serializers import AbstractResourceSerializer
 from core.common.utils import to_parent_uri_from_kwargs
 from core.concepts.models import Concept, ConceptName
 
@@ -105,7 +106,7 @@ class ConceptDescriptionSerializer(ConceptLabelSerializer):
         return ret
 
 
-class ConceptAbstractSerializer(ModelSerializer):
+class ConceptAbstractSerializer(AbstractResourceSerializer):
     uuid = CharField(source='id', read_only=True)
     mappings = SerializerMethodField()
     parent_concepts = SerializerMethodField()
@@ -119,7 +120,7 @@ class ConceptAbstractSerializer(ModelSerializer):
     class Meta:
         model = Concept
         abstract = True
-        fields = (
+        fields = AbstractResourceSerializer.Meta.fields + (
             'uuid', 'parent_concept_urls', 'child_concept_urls', 'parent_concepts', 'child_concepts', 'hierarchy_path',
             'mappings', 'extras', 'summary', 'references', 'has_children'
         )

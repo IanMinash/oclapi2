@@ -1630,14 +1630,11 @@ class ConceptListViewTest(OCLAPITestCase):
         self.assertEqual(len(response.data), 1)
         self.assertEqual(response.data[0]['id'], 'MyConcept1')
 
-        response = self.client.get('/concepts/?q=classA&exact_match=on')
+        response = self.client.get('/concepts/?q=MyConcept1&exact_match=on')
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(len(response.data), 1)
+        self.assertEqual(len(response.data), 2)
         self.assertEqual(response.data[0]['id'], 'MyConcept1')
-
-        response = self.client.get('/concepts/?q=Concept1&exact_match=on')
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(len(response.data), 0)
+        self.assertEqual(response.data[1]['id'], 'MyConcept2')
 
         response = self.client.get('/concepts/?q=Concept1&conceptClass=classA')
         self.assertEqual(response.status_code, 200)
@@ -1663,39 +1660,45 @@ class ConceptListViewTest(OCLAPITestCase):
         self.assertEqual(len(response.data), 1)
         self.assertEqual(response.data[0]['id'], 'MyConcept2')
 
-        response = self.client.get(self.source.concepts_url + '?q=MySource&extras.exact.foo=bar')
+        response = self.client.get(
+            self.source.concepts_url + '?q=MyConcept&extras.exact.foo=bar&includeSearchMeta=true')
         self.assertEqual(response.status_code, 200)
         self.assertEqual(len(response.data), 1)
         self.assertEqual(response.data[0]['id'], 'MyConcept1')
-
-        response = self.client.get(
-            self.source.concepts_url + '?q=MySource',
-            HTTP_AUTHORIZATION='Token ' + self.token,
+        self.assertEqual(
+            response.data[0]['search_meta']['search_highlight'],
+            {'extras.foo': ['<em>bar</em>'], 'id': ['<em>MyConcept1</em>']}
         )
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(len(response.data), 2)
 
         response = self.client.get(
-            self.source.concepts_url + '?q=MySource&limit=1',
-            HTTP_AUTHORIZATION='Token ' + self.token,
-        )
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(len(response.data), 1)
-
-        response = self.client.get(
-            self.source.concepts_url + '?q=My Source',
-            HTTP_AUTHORIZATION='Token ' + self.token,
-        )
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(len(response.data), 2)
-
-        response = self.client.get(
-            self.source.uri + 'v1/concepts/?q=MySource&sortAsc=last_update',
+            self.source.uri + 'v1/concepts/?q=MyConcept&sortAsc=last_update',
             HTTP_AUTHORIZATION='Token ' + self.random_user.get_token(),
         )
         self.assertEqual(response.status_code, 200)
         self.assertEqual(len(response.data), 1)
         self.assertEqual(response.data[0]['id'], 'MyConcept2')
+
+        response = self.client.get(
+            self.source.concepts_url + '?q=MyConcept&searchStatsOnly=true',
+            HTTP_AUTHORIZATION='Token ' + self.token,
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.data,
+            [
+                {'name': 'high', 'threshold': ANY, 'confidence': ANY, 'total': ANY},
+                {'name': 'medium', 'threshold': ANY, 'confidence': ANY, 'total': 0},
+                {'name': 'low', 'threshold': 0.01, 'confidence': '<50.0%', 'total': 0}
+            ]
+        )
+        self.assertTrue(response.data[0]['total'] >= 2)
+
+        response = self.client.get(
+            self.source.concepts_url + '?q=MyConcpt&fuzzy=true',
+            HTTP_AUTHORIZATION='Token ' + self.token,
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.data), 2)
 
     def test_facets(self):
         if settings.ENV == 'ci':

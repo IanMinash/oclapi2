@@ -180,6 +180,8 @@ class Concept(ConceptValidationMixin, SourceChildMixin, VersionedModel):  # pyli
                                    condition=(Q(is_active=True) & Q(retired=False))),
                       models.Index(name='concepts_head_parent_pub', fields=['parent_id', 'public_access'],
                                    condition=(Q(is_active=True) & Q(retired=False) & Q(id=F('versioned_object_id')))),
+                      models.Index(name='concepts_parent_active', fields=['parent_id', 'id', 'retired'],
+                                   condition=(Q(retired=False, id=F('versioned_object_id')))),
                       models.Index(fields=['uri']),
                       models.Index(fields=['version']),
                   ] + VersionedModel.Meta.indexes
@@ -228,26 +230,29 @@ class Concept(ConceptValidationMixin, SourceChildMixin, VersionedModel):  # pyli
     terminal = None
 
     es_fields = {
-        'id': {'sortable': True, 'filterable': True, 'exact': True},
+        'id': {'sortable': False, 'filterable': True, 'exact': True},
+        'id_lowercase': {'sortable': True, 'filterable': False, 'exact': False},
         'numeric_id': {'sortable': True, 'filterable': False, 'exact': False},
         'name': {'sortable': False, 'filterable': True, 'exact': True},
         '_name': {'sortable': True, 'filterable': False, 'exact': False},
         'last_update': {'sortable': True, 'filterable': False, 'default': 'desc'},
         'is_latest_version': {'sortable': False, 'filterable': True},
-        'concept_class': {'sortable': True, 'filterable': True, 'facet': True, 'exact': True},
-        'datatype': {'sortable': True, 'filterable': True, 'facet': True, 'exact': True},
-        'locale': {'sortable': False, 'filterable': True, 'facet': True, 'exact': True},
+        'concept_class': {'sortable': True, 'filterable': True, 'facet': True, 'exact': False},
+        'datatype': {'sortable': True, 'filterable': True, 'facet': True, 'exact': False},
+        'locale': {'sortable': False, 'filterable': True, 'facet': True, 'exact': False},
         'synonyms': {'sortable': False, 'filterable': True, 'facet': False, 'exact': True},
         'retired': {'sortable': False, 'filterable': True, 'facet': True},
-        'source': {'sortable': True, 'filterable': True, 'facet': True, 'exact': True},
+        'source': {'sortable': True, 'filterable': True, 'facet': True, 'exact': False},
         'collection': {'sortable': False, 'filterable': True, 'facet': True},
         'collection_url': {'sortable': False, 'filterable': True, 'facet': True},
         'collection_owner_url': {'sortable': False, 'filterable': False, 'facet': True},
-        'owner': {'sortable': True, 'filterable': True, 'facet': True, 'exact': True},
-        'owner_type': {'sortable': False, 'filterable': True, 'facet': True, 'exact': True},
+        'owner': {'sortable': True, 'filterable': True, 'facet': True, 'exact': False},
+        'owner_type': {'sortable': False, 'filterable': True, 'facet': True, 'exact': False},
         'external_id': {'sortable': False, 'filterable': True, 'facet': False, 'exact': True},
         'name_types': {'sortable': False, 'filterable': True, 'facet': True},
         'description_types': {'sortable': False, 'filterable': True, 'facet': True},
+        'same_as_map_codes': {'sortable': False, 'filterable': True, 'facet': False, 'exact': True},
+        'other_map_codes': {'sortable': False, 'filterable': True, 'facet': False, 'exact': True},
     }
 
     def get_basic_checksums(self):

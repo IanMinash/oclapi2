@@ -1,5 +1,6 @@
 import uuid
 
+from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.core.validators import RegexValidator
 from django.db import models, IntegrityError, transaction
@@ -9,6 +10,7 @@ from pydash import get
 from core.common.constants import NAMESPACE_REGEX, LATEST
 from core.common.mixins import SourceChildMixin
 from core.common.models import VersionedModel
+from core.common.tasks import batch_index_resources
 from core.common.utils import separate_version, to_parent_uri, generate_temp_version, \
     encode_string, is_url_encoded_string
 from core.mappings.constants import MAPPING_TYPE, MAPPING_IS_ALREADY_RETIRED, MAPPING_WAS_RETIRED, \
@@ -105,25 +107,25 @@ class Mapping(MappingValidationMixin, SourceChildMixin, VersionedModel):
     }
 
     es_fields = {
-        'id': {'sortable': True, 'filterable': True, 'exact': True},
+        'id': {'sortable': False, 'filterable': True, 'exact': True},
+        'id_lowercase': {'sortable': True, 'filterable': False, 'exact': False},
         'last_update': {'sortable': True, 'filterable': False, 'facet': False, 'default': 'desc'},
-        'concept': {'sortable': False, 'filterable': True, 'facet': False, 'exact': True},
-        'from_concept': {'sortable': False, 'filterable': True, 'facet': True, 'exact': True},
-        'to_concept': {'sortable': False, 'filterable': True, 'facet': True, 'exact': True},
+        'from_concept': {'sortable': False, 'filterable': True, 'facet': False, 'exact': True},
+        'to_concept': {'sortable': False, 'filterable': True, 'facet': False, 'exact': True},
         'retired': {'sortable': False, 'filterable': True, 'facet': True},
-        'map_type': {'sortable': True, 'filterable': True, 'facet': True, 'exact': True},
-        'source': {'sortable': True, 'filterable': True, 'facet': True, 'exact': True},
+        'map_type': {'sortable': True, 'filterable': True, 'facet': True, 'exact': False},
+        'source': {'sortable': True, 'filterable': True, 'facet': True, 'exact': False},
         'collection': {'sortable': False, 'filterable': True, 'facet': True},
         'collection_url': {'sortable': False, 'filterable': True, 'facet': True},
         'collection_owner_url': {'sortable': False, 'filterable': False, 'facet': True},
-        'owner': {'sortable': True, 'filterable': True, 'facet': True, 'exact': True},
+        'owner': {'sortable': True, 'filterable': True, 'facet': True, 'exact': False},
         'owner_type': {'sortable': False, 'filterable': True, 'facet': True},
-        'concept_source': {'sortable': False, 'filterable': True, 'facet': True, 'exact': True},
-        'from_concept_source': {'sortable': False, 'filterable': True, 'facet': True, 'exact': True},
-        'to_concept_source': {'sortable': False, 'filterable': True, 'facet': True, 'exact': True},
-        'concept_owner': {'sortable': False, 'filterable': True, 'facet': True, 'exact': True},
-        'from_concept_owner': {'sortable': False, 'filterable': True, 'facet': True, 'exact': True},
-        'to_concept_owner': {'sortable': False, 'filterable': True, 'facet': True, 'exact': True},
+        'concept_source': {'sortable': False, 'filterable': True, 'facet': True, 'exact': False},
+        'from_concept_source': {'sortable': False, 'filterable': True, 'facet': True, 'exact': False},
+        'to_concept_source': {'sortable': False, 'filterable': True, 'facet': True, 'exact': False},
+        'concept_owner': {'sortable': False, 'filterable': True, 'facet': True, 'exact': False},
+        'from_concept_owner': {'sortable': False, 'filterable': True, 'facet': True, 'exact': False},
+        'to_concept_owner': {'sortable': False, 'filterable': True, 'facet': True, 'exact': False},
         'concept_owner_type': {'sortable': False, 'filterable': True, 'facet': True},
         'from_concept_owner_type': {'sortable': False, 'filterable': True, 'facet': True},
         'to_concept_owner_type': {'sortable': False, 'filterable': True, 'facet': True},
@@ -397,10 +399,19 @@ class Mapping(MappingValidationMixin, SourceChildMixin, VersionedModel):
                 self.set_checksums()
                 if self.from_concept_id:
                     self.from_concept.set_mappings_checksum()
+                    self.index_from_concept()
         except ValidationError as ex:
             self.errors.update(ex.message_dict)
         except IntegrityError as ex:
             self.errors.update({'__all__': ex.args})
+
+    def index_from_concept(self):
+        if self.from_concept_id:
+            batch_index_resources(  # pylint: disable=expression-not-assigned
+                'concepts', {'versioned_object_id': self.from_concept.versioned_object_id}
+            ) if get(settings, 'TEST_MODE', False) else batch_index_resources.delay(
+                'concepts', {'versioned_object_id': self.from_concept.versioned_object_id}
+            )
 
     @classmethod
     def persist_new(cls, data, user):
@@ -440,6 +451,7 @@ class Mapping(MappingValidationMixin, SourceChildMixin, VersionedModel):
                 mapping.from_concept.set_mappings_checksum()
             if mapping._counted is True:
                 parent.update_mappings_count()
+                mapping.index_from_concept()
         except ValidationError as ex:
             mapping.errors.update(ex.message_dict)
         except IntegrityError as ex:
@@ -472,7 +484,7 @@ class Mapping(MappingValidationMixin, SourceChildMixin, VersionedModel):
         mapping.save()
 
     @classmethod
-    def persist_clone(cls, obj, user=None, **kwargs):
+    def persist_clone(cls, obj, user=None, **kwargs):  # pylint: disable=too-many-statements
         errors = {}
         if not user:
             errors['version_created_by'] = PERSIST_CLONE_SPECIFY_USER_ERROR
@@ -513,7 +525,7 @@ class Mapping(MappingValidationMixin, SourceChildMixin, VersionedModel):
                             if prev_latest_version:
                                 prev_latest_version.index()
                             obj.index()
-
+                            obj.index_from_concept()
                     transaction.on_commit(index_all)
         except ValidationError as err:
             errors.update(err.message_dict)

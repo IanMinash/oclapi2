@@ -23,6 +23,7 @@ from django.utils import timezone
 from djqscsv import csv_file_for
 from elasticsearch_dsl import Q as es_Q
 from pydash import flatten, compact, get
+from requests import ConnectTimeout
 from requests.auth import HTTPBasicAuth
 from rest_framework.utils import encoders
 
@@ -409,14 +410,26 @@ def flower_get(url, **kwargs):
 
 def es_get(url, **kwargs):
     """
-    Returns a flower response from the given endpoint url.
+    Returns an es response from the given endpoint url.
     :param url:
     :return:
     """
-    return requests.get(
-        f'http://{settings.ES_HOST}:{settings.ES_PORT}/{url}',
-        **kwargs
-    )
+    if settings.ES_HOSTS:
+        for es_host in settings.ES_HOSTS.split(','):
+            try:
+                return requests.get(
+                    f'http://{es_host}/{url}',
+                    **kwargs
+                )
+            except ConnectTimeout:
+                continue
+    else:
+        return requests.get(
+            f'http://{settings.ES_HOST}:{settings.ES_PORT}/{url}',
+            **kwargs
+        )
+
+    return None
 
 
 def task_exists(task_id):
@@ -896,3 +909,11 @@ def generic_sort(_list):
             return item
         return str(item)
     return sorted(_list, key=compare)
+
+
+def get_falsy_values():
+    return ['false', False, 'False', 0, '0', 'None', 'null', None]
+
+
+def get_truthy_values():
+    return ['true', True, 'True', 1, '1']

@@ -440,7 +440,6 @@ class ConceptContainerModel(VersionedModel, ChecksumModel):
         except:  # pylint: disable=bare-except
             return None
 
-
     @classmethod
     def get_base_queryset(cls, params):
         username = params.get('user', None)
@@ -940,6 +939,14 @@ class ConceptContainerModel(VersionedModel, ChecksumModel):
             'released': self.released_versions_count
         }
 
+    def get_concepts_extras_distribution(self):
+        return self.get_distinct_extras_keys(self.get_concepts_queryset(), 'concepts')
+
+    @staticmethod
+    def get_distinct_extras_keys(queryset, resource):
+        return set(queryset.exclude(retired=True).extra(
+            select={'key': f"jsonb_object_keys({resource}.extras)"}).values_list('key', flat=True))
+
     def get_name_locales_queryset(self):
         from core.concepts.models import ConceptName
         return ConceptName.objects.filter(concept__in=self.get_active_concepts())
@@ -971,12 +978,12 @@ class ConceptContainerModel(VersionedModel, ChecksumModel):
         return list(queryset.values(field).annotate(count=Count('id')).values(field, 'count').order_by('-count'))
 
     def get_concept_facets(self, filters=None):
-        from core.concepts.search import ConceptSearch
-        return self._get_resource_facets(ConceptSearch, filters)
+        from core.concepts.search import ConceptFacetedSearch
+        return self._get_resource_facets(ConceptFacetedSearch, filters)
 
     def get_mapping_facets(self, filters=None):
-        from core.mappings.search import MappingSearch
-        return self._get_resource_facets(MappingSearch, filters)
+        from core.mappings.search import MappingFacetedSearch
+        return self._get_resource_facets(MappingFacetedSearch, filters)
 
     def _get_resource_facets(self, facet_class, filters=None):
         search = facet_class('', filters=self._get_resource_facet_filters(filters))

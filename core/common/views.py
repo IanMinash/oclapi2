@@ -13,7 +13,7 @@ from drf_yasg import openapi
 from drf_yasg.utils import swagger_auto_schema
 from elasticsearch import RequestError, TransportError
 from elasticsearch_dsl import Q
-from pydash import get
+from pydash import get, compact
 from rest_framework import response, generics, status
 from rest_framework.generics import ListAPIView, RetrieveUpdateDestroyAPIView
 from rest_framework.permissions import AllowAny, IsAuthenticated
@@ -24,12 +24,14 @@ from core import __version__
 from core.common.checksums import Checksum
 from core.common.constants import SEARCH_PARAM, LIST_DEFAULT_LIMIT, CSV_DEFAULT_LIMIT, \
     LIMIT_PARAM, NOT_FOUND, MUST_SPECIFY_EXTRA_PARAM_IN_BODY, INCLUDE_RETIRED_PARAM, VERBOSE_PARAM, HEAD, LATEST, \
-    BRIEF_PARAM, ES_REQUEST_TIMEOUT, INCLUDE_INACTIVE, FHIR_LIMIT_PARAM
+    BRIEF_PARAM, ES_REQUEST_TIMEOUT, INCLUDE_INACTIVE, FHIR_LIMIT_PARAM, RAW_PARAM, SEARCH_MAP_CODES_PARAM, \
+    INCLUDE_SEARCH_META_PARAM
 from core.common.exceptions import Http400
 from core.common.mixins import PathWalkerMixin
+from core.common.search import CustomESSearch
 from core.common.serializers import RootSerializer
 from core.common.utils import compact_dict_by_values, to_snake_case, to_camel_case, parse_updated_since_param, \
-    is_url_encoded_string, to_int, get_user_specific_task_id
+    is_url_encoded_string, to_int, get_user_specific_task_id, get_falsy_values, get_truthy_values
 from core.concepts.permissions import CanViewParentDictionary, CanEditParentDictionary
 from core.orgs.constants import ORG_OBJECT_TYPE
 from core.tasks.constants import TASK_NOT_COMPLETED
@@ -48,7 +50,7 @@ class BaseAPIView(generics.GenericAPIView, PathWalkerMixin):
     user_is_self = False
     is_searchable = False
     limit = LIST_DEFAULT_LIMIT
-    default_filters = {'is_active': True}
+    default_filters = {}
     sort_asc_param = 'sortAsc'
     sort_desc_param = 'sortDesc'
     sort_param = 'sort'
@@ -88,6 +90,9 @@ class BaseAPIView(generics.GenericAPIView, PathWalkerMixin):
 
     def is_verbose(self):
         return self.request.query_params.get(VERBOSE_PARAM, False) in ['true', True]
+
+    def is_raw(self):
+        return self.request.query_params.get(RAW_PARAM, False) in ['true', True]
 
     def is_brief(self):
         return self.request.query_params.get(BRIEF_PARAM, False) in ['true', True]
@@ -144,7 +149,12 @@ class BaseAPIView(generics.GenericAPIView, PathWalkerMixin):
 
     def filter_queryset(self, queryset=None):
         if self.is_searchable and self.should_perform_es_search():
-            return self.get_search_results_qs()
+            if self.is_fuzzy_search:
+                queryset, self._scores, self._max_score, self._highlights = self.get_fuzzy_search_results_qs(
+                    self._source_versions, self._extra_filters)
+            else:
+                queryset, self._scores, self._max_score, self._highlights = self.get_search_results_qs()
+            return queryset
 
         if queryset is None:
             queryset = self.get_queryset()
@@ -188,19 +198,44 @@ class BaseAPIView(generics.GenericAPIView, PathWalkerMixin):
         return self.request.query_params.dict().get(self.exact_match, None) == 'on'
 
     def get_exact_search_fields(self):
-        return [field for field, config in get(self, 'es_fields', {}).items() if config.get('exact', False)]
+        fields = [field for field, config in get(self, 'es_fields', {}).items() if config.get('exact', False)]
+        return self.clean_fields(fields)
+
+    def clean_fields(self, fields):
+        if self.is_concept_document() and self.request.query_params.get(SEARCH_MAP_CODES_PARAM) in get_falsy_values():
+            map_code_fields = ['same_as_map_codes', 'other_map_codes']
+            if isinstance(fields, dict):
+                fields = {key: value for key, value in fields.items() if key not in map_code_fields}
+            elif isinstance(fields, list):
+                fields = [field for field in fields if field not in map_code_fields]
+        return fields
 
     def get_search_string(self, lower=True, decode=True):
         search_str = self.request.query_params.dict().get(SEARCH_PARAM, '').strip()
         if lower:
             search_str = search_str.lower()
         if decode:
+            search_str = search_str.replace('**', '*')
+            starts_with_asterisk = search_str.startswith('*')
+            ends_with_asterisk = search_str.endswith('*')
+            if starts_with_asterisk:
+                search_str = search_str[1:]
+            if ends_with_asterisk:
+                search_str = search_str[:-1]
             search_str = search_str if is_url_encoded_string(search_str) else urllib.parse.quote_plus(search_str)
+            if starts_with_asterisk:
+                search_str = f'*{search_str}'
+            if ends_with_asterisk:
+                search_str = f'{search_str}*'
 
         return search_str
 
+    @property
+    def is_fuzzy_search(self):
+        return self.request.query_params.dict().get('fuzzy', None) in get_truthy_values()
+
     def get_wildcard_search_string(self, _str):
-        return f"*{_str or self.get_search_string()}*"
+        return f"{_str or self.get_search_string()}*".replace('**', '*')
 
     @staticmethod
     def __get_order_by(is_desc):
@@ -232,25 +267,63 @@ class BaseAPIView(generics.GenericAPIView, PathWalkerMixin):
 
         return result
 
+    def get_fuzzy_search_criteria(self, boost_divide_by=10, expansions=5):
+        search_string = self.get_search_string(decode=False)
+        wildcard_fields = self.get_wildcard_search_fields()
+        criterion = None
+        for attr, meta in wildcard_fields.items():
+            criteria = CustomESSearch.fuzzy_criteria(search_string, attr, meta['boost'] / boost_divide_by, expansions)
+            if criterion is None:
+                criterion = criteria
+            else:
+                criterion |= criteria
+        return criterion
+
+    def get_wildcard_search_criterion(self):
+        search_string = self.get_search_string()
+        wildcard_fields = self.get_wildcard_search_fields()
+
+        def get_query(_str):
+            query = None
+            for attr, meta in wildcard_fields.items():
+                decode = meta['decode'] if 'decode' in meta else True
+                lower = meta['lower'] if 'lower' in meta else True
+                _search_string = self.get_wildcard_search_string(self.get_search_string(decode=decode, lower=lower))
+                criteria = CustomESSearch.get_wildcard_criteria(attr, _search_string, meta['boost'])
+                if query is None:
+                    query = criteria
+                else:
+                    query |= criteria
+            return query
+
+        if not search_string:
+            return get_query(search_string), []
+        words = search_string.split()
+        criterion = get_query(words[0])
+        for word in words[1:]:
+            criterion |= get_query(word)
+
+        return criterion, list(wildcard_fields.keys())
+
     def get_exact_search_criterion(self):
         search_str = self.get_search_string(False, False)
+        criterion = None
+        fields = []
+        match_phrase_attrs = self.document_model.get_match_phrase_attrs() or []
+        fields += match_phrase_attrs
+        if match_phrase_attrs:
+            criterion = CustomESSearch.get_match_phrase_criteria(match_phrase_attrs.pop(), search_str, 5)
+            for attr in match_phrase_attrs:
+                criterion |= CustomESSearch.get_match_phrase_criteria(attr, search_str, 5)
 
-        def get_query(attr):
-            words = search_str.split(' ')
-            if words[0] != search_str:
-                criteria = Q('match', **{attr: search_str}) | Q('match', **{attr: words[0]})
-            else:
-                criteria = Q('match', **{attr: words[0]})
-            for word in words[1:]:
-                criteria &= Q('match', **{attr: word})
-            return criteria
+        for field, meta in self.document_model.get_exact_match_attrs().items():
+            fields.append(field)
+            criteria = CustomESSearch.get_match_criteria(field, search_str, meta['boost'])
+            if criterion is None:
+                criterion = criteria
+            criterion |= criteria
 
-        exact_search_fields = self.get_exact_search_fields()
-        criterion = get_query(exact_search_fields.pop())
-        for field in exact_search_fields:
-            criterion |= get_query(field)
-
-        return criterion
+        return criterion, fields
 
     def get_faceted_criterion(self):
         filters = self.get_faceted_filters()
@@ -489,142 +562,179 @@ class BaseAPIView(generics.GenericAPIView, PathWalkerMixin):
 
         return (not collection or collection.startswith('!')) and (not version or version.startswith('!'))
 
-    @property
-    def __search_results(self):  # pylint: disable=too-many-branches,too-many-locals,too-many-statements
+    def __apply_common_search_filters(self):
         results = None
+        if not self.should_perform_es_search():
+            return results
 
-        if self.should_perform_es_search():
-            results = self.document_model.search()
-            default_filters = self.default_filters.copy()
-            if self.is_user_document() and self.should_include_inactive():
-                default_filters.pop('is_active', None)
-            if self.is_source_child_document_model() and self.__should_query_latest_version():
-                default_filters['is_latest_version'] = True
+        results = self.document_model.search()
+        default_filters = self.default_filters.copy()
+        if self.is_user_document() and self.should_include_inactive():
+            default_filters.pop('is_active', None)
+        if self.is_source_child_document_model() and self.__should_query_latest_version():
+            default_filters['is_latest_version'] = True
 
-            for field, value in default_filters.items():
-                results = results.query("match", **{field: value})
+        for field, value in default_filters.items():
+            results = results.query("match", **{field: value})
 
-            faceted_criterion = self.get_faceted_criterion()
-            extras_fields = self.get_extras_searchable_fields_from_query_params()
-            extras_fields_exact = self.get_extras_exact_fields_from_query_params()
-            extras_fields_exists = self.get_extras_fields_exists_from_query_params()
+        updated_since = parse_updated_since_param(self.request.query_params)
+        if updated_since:
+            results = results.query('range', last_update={"gte": updated_since})
 
-            if faceted_criterion:
-                results = results.query(faceted_criterion)
+        if self._should_exclude_retired_from_search_results():
+            results = results.query('match', retired=False)
 
-            if self.is_exact_match_on():
-                results = results.query(self.get_exact_search_criterion())
-            else:
-                results = results.query(self.get_wildcard_search_criterion())
+        include_private = self._should_include_private()
+        if not include_private:
+            results = results.query(self.get_public_criteria())
 
-            updated_since = parse_updated_since_param(self.request.query_params)
-            if updated_since:
-                results = results.query('range', last_update={"gte": updated_since})
+        faceted_criterion = self.get_faceted_criterion()
+        if faceted_criterion:
+            results = results.query(faceted_criterion)
+        return results
 
-            if extras_fields:
-                for field, value in extras_fields.items():
-                    results = results.filter("query_string", query=value, fields=[field])
-            if extras_fields_exists:
-                for field in extras_fields_exists:
-                    results = results.query("exists", field=f"extras.{field}")
-            if extras_fields_exact:
-                for field, value in extras_fields_exact.items():
-                    results = results.query("match", **{field: value}, _expand__to_dot=False)
+    def __get_fuzzy_search_results(
+            self, source_versions=None, other_filters=None, sort=True
+    ):
+        results = self.__apply_common_search_filters()
+        if results is None:
+            return results
 
-            if self._should_exclude_retired_from_search_results():
-                results = results.query('match', retired=False)
+        for key, value in (other_filters or {}).items():
+            results = results.query('match', **{key: value})
 
-            user = self.request.user
-            is_authenticated = user.is_authenticated
-            username = user.username
+        if source_versions:
+            results = results.query(
+                self.__get_source_versions_es_criterion(source_versions)
+            )
+        results = results.query(self.get_fuzzy_search_criteria())
 
-            include_private = self._should_include_private()
-            if not include_private:
-                results = results.query(self.get_public_criteria())
+        min_score = self.request.query_params.get('min_score') or None
+        if min_score:
+            results = results.extra(min_score=float(min_score))
 
-            if self.is_owner_document_model():
-                kwargs_filters = self.kwargs.copy()
-                if self.user_is_self and is_authenticated:
-                    kwargs_filters.pop('user_is_self', None)
-                    kwargs_filters['user'] = username
-            else:
-                kwargs_filters = self.get_kwargs_filters()
-                if self.get_view_name() in ['Organization Collection List', 'Organization Source List']:
-                    kwargs_filters['ownerType'] = 'Organization'
-                    kwargs_filters['owner'] = list(
-                        self.request.user.organizations.values_list('mnemonic', flat=True)) or ['UNKNOWN-ORG-DUMMY']
-                elif self.user_is_self and is_authenticated:
-                    kwargs_filters['ownerType'] = 'User'
-                    kwargs_filters['owner'] = username
+        if sort:
+            results = results.sort(*self._get_sort_attribute())
 
-            for key, value in kwargs_filters.items():
-                attr = to_snake_case(key)
-                if isinstance(value, list):
-                    criteria = Q('match', **{attr: get(value, '0')})
-                    for val in value[1:]:
-                        criteria |= Q('match', **{attr: val})
-                    results = results.query(criteria)
-                else:
-                    results = results.query('match', **{attr: value})
-
-            sort_by = self.get_sort_attributes()
-            if sort_by:
-                results = results.sort(*sort_by)
-            else:
-                results = results.sort({'_score': {'order': "desc"}})
+        if self.request.query_params.get(INCLUDE_SEARCH_META_PARAM) in get_truthy_values():
+            results = results.highlight(
+                *self.clean_fields_for_highlight(set(compact(self.get_wildcard_search_fields().keys()))))
 
         return results
 
-    def get_wildcard_search_criterion(self):
-        search_string = self.get_search_string()
-        boost_attrs = self.document_model.get_boostable_search_attrs() or {}
+    def __get_search_aggregations(
+            self, source_versions=None, other_filters=None
+    ):
+        results = self.__get_fuzzy_search_results(
+            source_versions=source_versions, other_filters=other_filters, sort=False
+        ) if self.is_fuzzy_search else self.__search_results
 
-        def get_query(_str):
-            query = Q("query_string", query=self.get_wildcard_search_string(_str), boost=0)
-            for attr, meta in boost_attrs.items():
-                is_wildcard = meta.get('wildcard', False)
-                decode = meta.get('decode', False)
-                lower = meta.get('lower', False)
-                _search_string = _str
-                if lower or decode:
-                    _search_string = self.get_search_string(decode=decode, lower=lower)
-                if is_wildcard:
-                    _search_string = self.get_wildcard_search_string(_search_string)
-                query |= Q("wildcard", **{attr: {'value': _search_string, 'boost': meta['boost']}})
-            return query
+        results = results.extra(size=0)
+        search = CustomESSearch(results)
+        search.apply_aggregation_score_stats()
+        search.apply_aggregation_score_histogram()
+        return search
 
-        if not search_string:
-            return get_query(search_string)
-        words = search_string.split()
-        criterion = get_query(words[0])
-        for word in words[1:]:
-            criterion |= get_query(word)
+    def __get_source_versions_es_criterion(self, source_versions):
+        criterion = None
+        for source_version in (source_versions or []):
+            criteria = self.__get_source_version_es_criteria(source_version)
+            if criterion is None:
+                criterion = criteria
+            else:
+                criterion |= criteria
+        return criterion or Q()
 
-        if self.is_concept_document() and ' ' in search_string:
-            criterion |= Q("wildcard", _name={'value': search_string, 'boost': 3.5})
-            criterion |= Q("wildcard", synonyms={'value': search_string, 'boost': 3.3})
-            criterion |= Q("wildcard", synonyms={'value': search_string.replace(' ', '*'), 'boost': 3.2})
-            criterion |= Q("wildcard", synonyms={'value': search_string.replace(' ', '*') + '*', 'boost': 3.1})
-            criterion |= Q("wildcard", synonyms={'value': '*' + search_string.replace(' ', '*') + '*', 'boost': 3})
+    @staticmethod
+    def __get_source_version_es_criteria(source_version):
+        criteria = Q('match', source_version=source_version.version)
+        criteria &= Q('match', source=source_version.mnemonic)
+        criteria &= Q('match', owner=source_version.parent.mnemonic)
+        criteria &= Q('match', owner_type=source_version.parent.resource_type)
+        return criteria
 
-        return criterion
+    @property
+    def __search_results(self):  # pylint: disable=too-many-branches,too-many-locals,too-many-statements
+        results = self.__apply_common_search_filters()
+        if results is None:
+            return results
 
-    def get_search_results_qs(self):
-        search_results = self.__search_results
-        search_results = search_results.params(request_timeout=ES_REQUEST_TIMEOUT)
-        try:
-            self.total_count = search_results.count()
-        except TransportError as ex:
-            raise Http400(detail='Data too large.') from ex
+        extras_fields = self.get_extras_searchable_fields_from_query_params()
+        extras_fields_exact = self.get_extras_exact_fields_from_query_params()
+        extras_fields_exists = self.get_extras_fields_exists_from_query_params()
+        exact_search_criterion, exact_search_fields = self.get_exact_search_criterion()
+        wildcard_search_criterion, wildcard_search_fields = self.get_wildcard_search_criterion()
+        fuzzy_search_criterion = self.get_fuzzy_search_criteria(boost_divide_by=10000, expansions=2)
+        results = results.query(exact_search_criterion | wildcard_search_criterion | fuzzy_search_criterion)
+        fields = exact_search_fields + wildcard_search_fields
+        if extras_fields:
+            fields += list(extras_fields.keys())
+            for field, value in extras_fields.items():
+                results = results.filter("query_string", query=value, fields=[field])
+        if extras_fields_exists:
+            fields += list(extras_fields_exists)
+            for field in extras_fields_exists:
+                results = results.query("exists", field=f"extras.{field}")
+        if extras_fields_exact:
+            fields += list(extras_fields_exact.keys())
+            for field, value in extras_fields_exact.items():
+                results = results.query("match", **{field: value}, _expand__to_dot=False)
 
-        self.limit = int(self.limit)
+        user = self.request.user
+        is_authenticated = user.is_authenticated
+        username = user.username
 
-        self.limit = self.limit or LIST_DEFAULT_LIMIT
+        if self.is_owner_document_model():
+            kwargs_filters = self.kwargs.copy()
+            if self.user_is_self and is_authenticated:
+                kwargs_filters.pop('user_is_self', None)
+                kwargs_filters['user'] = username
+        else:
+            kwargs_filters = self.get_kwargs_filters()
+            if self.get_view_name() in ['Organization Collection List', 'Organization Source List']:
+                kwargs_filters['ownerType'] = 'Organization'
+                kwargs_filters['owner'] = list(
+                    user.organizations.values_list('mnemonic', flat=True)) or ['UNKNOWN-ORG-DUMMY']
+            elif self.user_is_self and is_authenticated:
+                kwargs_filters['ownerType'] = 'User'
+                kwargs_filters['owner'] = username
+
+        for key, value in kwargs_filters.items():
+            attr = to_snake_case(key)
+            if isinstance(value, list):
+                criteria = Q('match', **{attr: get(value, '0')})
+                for val in value[1:]:
+                    criteria |= Q('match', **{attr: val})
+                results = results.query(criteria)
+            else:
+                results = results.query('match', **{attr: value})
+
+        if self.request.query_params.get(INCLUDE_SEARCH_META_PARAM) in get_truthy_values():
+            results = results.highlight(*self.clean_fields_for_highlight(fields))
+        return results.sort(*self._get_sort_attribute())
+
+    @staticmethod
+    def clean_fields_for_highlight(fields):
+        return [field for field in set(compact(fields)) if not field.startswith('_')]
+
+    def _get_sort_attribute(self):
+        return self.get_sort_attributes() or [{'_score': {'order': 'desc'}}]
+
+    def get_wildcard_search_fields(self):
+        return self.clean_fields(self.document_model.get_boostable_search_attrs() or {})
+
+    def __get_queryset_from_search_results(self, search_results):
+        offset = max(to_int(self.request.GET.get('offset'), 0), 0)
+        self.limit = int(self.limit) or LIST_DEFAULT_LIMIT
         page = max(to_int(self.request.GET.get('page'), 1), 1)
-        start = (page - 1) * self.limit
+        start = offset or (page - 1) * self.limit
         end = start + self.limit
         try:
-            return search_results[start:end].to_queryset()
+            search_results = search_results.params(request_timeout=ES_REQUEST_TIMEOUT)
+            es_search = CustomESSearch(search_results[start:end])
+            es_search.to_queryset()
+            self.total_count = es_search.total - offset
+            return es_search.queryset, es_search.scores, es_search.max_score, es_search.highlights
         except RequestError as ex:  # pragma: no cover
             if get(ex, 'info.error.caused_by.reason', '').startswith('Result window is too large'):
                 raise Http400(detail='Only 10000 results are available. Please apply additional filters'
@@ -632,6 +742,21 @@ class BaseAPIView(generics.GenericAPIView, PathWalkerMixin):
             raise ex
         except TransportError as ex:  # pragma: no cover
             raise Http400(detail='Data too large.') from ex
+
+    def get_search_results_qs(self):
+        return self.__get_queryset_from_search_results(self.__search_results)
+
+    def get_fuzzy_search_results_qs(
+            self, source_versions=None, other_filters=None
+    ):
+        return self.__get_queryset_from_search_results(self.__get_fuzzy_search_results(source_versions, other_filters))
+
+    def get_search_stats(
+            self, source_versions=None, other_filters=None
+    ):
+        return self.__get_search_aggregations(
+            source_versions, other_filters
+        ).get_aggregations(self.is_verbose(), self.is_raw())
 
     def should_perform_es_search(self):
         return bool(self.get_search_string()) or self.has_searchable_extras_fields() or bool(self.get_faceted_filters())
@@ -656,7 +781,7 @@ class SourceChildCommonBaseView(BaseAPIView):
     pk_field = 'mnemonic'
     permission_classes = (CanViewParentDictionary, )
     is_searchable = True
-    default_filters = {'is_active': True}
+    default_filters = {}
 
     def initial(self, request, *args, **kwargs):
         super().initial(request, *args, **kwargs)
