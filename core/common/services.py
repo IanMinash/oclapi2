@@ -106,6 +106,22 @@ class S3:
         return True
 
     @classmethod
+    def rename(cls, old_key, new_key, delete=False):  # pragma: no cover
+        try:
+            resource = cls.__resource()
+            resource.meta.client.copy(
+                {"Bucket": settings.AWS_STORAGE_BUCKET_NAME, "Key": old_key},
+                settings.AWS_STORAGE_BUCKET_NAME,
+                new_key,
+            )
+            if delete:
+                cls.delete_objects(old_key)
+        except (ClientError, NoCredentialsError):
+            return False
+
+        return True
+
+    @classmethod
     def has_path(cls, prefix="/", delimiter="/"):
         return len(cls.__fetch_keys(prefix, delimiter)) > 0
 
@@ -301,6 +317,18 @@ class MinioExportService:
             return False
 
     @classmethod
+    def rename(cls, old_key, new_key, delete=False):  # pragma: no cover
+        try:
+            client = cls._conn()
+            client.copy_object(settings.AWS_STORAGE_BUCKET_NAME, new_key, old_key)
+            if delete:
+                cls.delete_objects(old_key)
+        except (ClientError, NoCredentialsError):
+            return False
+
+        return True
+
+    @classmethod
     def delete_objects(cls, path):  # pragma: no cover
         try:
             client = cls._conn()
@@ -393,6 +421,10 @@ class MinioExportService:
         client = cls._conn()
         objects = client.list_objects(settings.AWS_STORAGE_BUCKET_NAME, prefix=prefix)
         return [obj.object_name for obj in objects]
+
+    @classmethod
+    def __resource(cls):
+        return cls._session().resource("s3")
 
 
 class RedisService:  # pragma: no cover

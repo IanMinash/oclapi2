@@ -335,10 +335,10 @@ def write_export_file(
     logger.info(file_path)
     logger.info('Done compressing.  Uploading...')
 
-    s3_key = version.export_path
+    s3_key = version.version_export_path
     export_service = get_export_service()
     if version.is_head:
-        export_service.delete_objects(version.generic_export_path(suffix=None))
+        export_service.delete_objects(version.get_version_export_path(suffix=None))
 
     upload_status_code = export_service.upload_file(
         key=s3_key, file_path=file_path, binary=True, metadata={'ContentType': 'application/zip'},
@@ -663,12 +663,20 @@ def guess_extension(file=None, name=None):
 
 
 def is_csv_file(file=None, name=None):
+    return is_file_extension('csv', file, name)
+
+
+def is_zip_file(file=None, name=None):
+    return is_file_extension('zip', file, name)
+
+
+def is_file_extension(extension, file=None, name=None):
     if not file and not name:
-        return None
+        return False
 
-    extension = guess_extension(file=file, name=name)
+    file_extension = guess_extension(file=file, name=name)
 
-    return extension and extension.endswith('csv')
+    return file_extension and file_extension.endswith(extension)
 
 
 def is_url_encoded_string(string, lower=True):
@@ -795,41 +803,6 @@ def get_es_wildcard_search_criterion(search_str, name_attr='name'):
     return criterion
 
 
-def get_es_exact_search_criterion(search_str, fields):
-    def get_query(attr):
-        words = search_str.split(' ')
-        criteria = es_Q('match', **{attr: words[0]})
-        for word in words[1:]:
-            criteria &= es_Q('match', **{attr: word})
-        return criteria
-
-    criterion = get_query(fields.pop())
-    for field in fields:
-        criterion |= get_query(field)
-
-    return criterion
-
-
-def es_wildcard_search(search, search_str, exact_search_fields, name_attr='name'):
-    if not search_str:
-        return search
-
-    return search.query(
-        get_es_wildcard_search_criterion(
-            search_str, name_attr) | get_es_exact_search_criterion(search_str, exact_search_fields))
-
-
-def es_exact_search(search, search_str, exact_search_fields):
-    if not search_str:
-        return search
-
-    return search.query(get_es_exact_search_criterion(search_str, exact_search_fields))
-
-
-def get_exact_search_fields(klass):
-    return [field for field, config in get(klass, 'es_fields', {}).items() if config.get('exact', False)]
-
-
 def es_to_pks(search):
     # doesn't care about the order
     default_limit = 25
@@ -912,7 +885,7 @@ def generic_sort(_list):
 
 
 def get_falsy_values():
-    return ['false', False, 'False', 0, '0', 'None', 'null', None]
+    return ['false', False, 'False', 0, '0', 'None', 'null']
 
 
 def get_truthy_values():
