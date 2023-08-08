@@ -2,7 +2,6 @@ import base64
 import json
 
 import boto3
-import redis
 import requests
 from botocore.client import Config
 from botocore.exceptions import NoCredentialsError, ClientError
@@ -14,14 +13,13 @@ from django.conf import settings
 from django.contrib.auth.backends import ModelBackend
 from django.core.files.base import ContentFile
 from django.db import connection
-from django.core.files.base import ContentFile
+from django_redis import get_redis_connection
 from mozilla_django_oidc.contrib.drf import OIDCAuthentication
 from pydash import get
 from rest_framework.authentication import TokenAuthentication
 from rest_framework.authtoken.models import Token
 
 from core.common.backends import OCLOIDCAuthenticationBackend
-from core.settings import REDIS_HOST, REDIS_PORT, REDIS_DB
 
 
 class S3:
@@ -429,7 +427,7 @@ class MinioExportService:
 
 class RedisService:  # pragma: no cover
     def __init__(self):
-        self.conn = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB)
+        self.conn = get_redis_connection('default')
 
     def set(self, key, val, **kwargs):
         return self.conn.set(key, val, **kwargs)

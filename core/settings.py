@@ -83,7 +83,6 @@ INSTALLED_APPS = [
     'health_check',  # required
     'health_check.db',  # stock Django health checkers
     # 'health_check.contrib.celery_ping',  # requires celery
-    'health_check.contrib.redis',  # requires Redis broker
     'core.common.apps.CommonConfig',
     'core.users',
     'core.orgs',
@@ -195,9 +194,12 @@ DATABASES = {
 ES_HOST = os.environ.get('ES_HOST', 'es')  # Deprecated. Use ES_HOSTS instead.
 ES_PORT = os.environ.get('ES_PORT', '9200')  # Deprecated. Use ES_HOSTS instead.
 ES_HOSTS = os.environ.get('ES_HOSTS', None)
+ES_SCHEME = os.environ.get('ES_SCHEME', 'http')
 ELASTICSEARCH_DSL = {
     'default': {
-        'hosts': ES_HOSTS.split(',') if ES_HOSTS else [ES_HOST + ':' + ES_PORT]
+        'hosts': ES_HOSTS.split(',') if ES_HOSTS else [ES_HOST + ':' + ES_PORT],
+        'use_ssl': ES_SCHEME == 'https',
+        'verify_certs': ES_SCHEME == 'https',
     },
 }
 
@@ -310,24 +312,24 @@ REDIS_SENTINELS_MASTER = os.environ.get('REDIS_SENTINELS_MASTER', 'default')
 REDIS_SENTINELS_LIST = []
 
 # django cache
-if ENV and ENV not in ['ci']:
-    OPTIONS = {}
-    if REDIS_SENTINELS:
-        for REDIS_SENTINEL in REDIS_SENTINELS.split(','):
-            SENTINEL = REDIS_SENTINEL.split(':')
-            REDIS_SENTINELS_LIST.append((SENTINEL[0], int(SENTINEL[1])))
-        OPTIONS.update({
-            'CLIENT_CLASS': 'django_redis.client.SentinelClient',
-            'SENTINELS': REDIS_SENTINELS_LIST
-        })
+OPTIONS = {}
+if REDIS_SENTINELS:
+    for REDIS_SENTINEL in REDIS_SENTINELS.split(','):
+        SENTINEL = REDIS_SENTINEL.split(':')
+        REDIS_SENTINELS_LIST.append((SENTINEL[0], int(SENTINEL[1])))
+    OPTIONS.update({
+        'CLIENT_CLASS': 'django_redis.client.SentinelClient',
+        'SENTINELS': REDIS_SENTINELS_LIST,
+        'CONNECTION_POOL_CLASS': 'redis.sentinel.SentinelConnectionPool',
+    })
 
-    CACHES = {
-        'default': {
-            'BACKEND': 'django_redis.cache.RedisCache',
-            'LOCATION': REDIS_URL,
-            'OPTIONS': OPTIONS
-        }
+CACHES = {
+    'default': {
+        'BACKEND': 'django_redis.cache.RedisCache',
+        'LOCATION': REDIS_URL,
+        'OPTIONS': OPTIONS
     }
+}
 
 # Celery
 CELERY_ENABLE_UTC = True
@@ -398,6 +400,11 @@ CELERYBEAT_SCHEDULE = {
         'task': 'core.common.tasks.monthly_usage_report',
         'schedule': crontab(1, 0, day_of_month='1'),
     },
+    'vacuum-and-analyze-db': {
+        'task': 'core.common.tasks.vacuum_and_analyze_db',
+        'schedule': crontab(0, 1),  # Run at 1 am
+    },
+
 }
 CELERYBEAT_HEALTHCHECK_KEY = 'celery_beat_healthcheck'
 ELASTICSEARCH_DSL_PARALLEL = True
