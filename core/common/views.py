@@ -1,4 +1,5 @@
 import base64
+import re
 from email.mime.image import MIMEImage
 
 import markdown
@@ -29,7 +30,7 @@ from core.common.exceptions import Http400
 from core.common.mixins import PathWalkerMixin
 from core.common.search import CustomESSearch
 from core.common.serializers import RootSerializer
-from core.common.utils import compact_dict_by_values, to_snake_case, to_camel_case, parse_updated_since_param, \
+from core.common.utils import compact_dict_by_values, to_snake_case, parse_updated_since_param, \
     to_int, get_user_specific_task_id, get_falsy_values, get_truthy_values
 from core.concepts.permissions import CanViewParentDictionary, CanEditParentDictionary
 from core.orgs.constants import ORG_OBJECT_TYPE
@@ -56,7 +57,6 @@ class BaseAPIView(generics.GenericAPIView, PathWalkerMixin):
     sort_desc_param = 'sortDesc'
     sort_param = 'sort'
     default_qs_sort_attr = '-updated_at'
-    exact_match = 'exact_match'
     facet_class = None
     total_count = 0
 
@@ -194,9 +194,6 @@ class BaseAPIView(generics.GenericAPIView, PathWalkerMixin):
 
         return False
 
-    def is_exact_match_on(self):
-        return self.request.query_params.dict().get(self.exact_match, None) == 'on'
-
     def clean_fields(self, fields):
         if self.is_concept_document() and self.request.query_params.get(SEARCH_MAP_CODES_PARAM) in get_falsy_values():
             if isinstance(fields, dict):
@@ -206,8 +203,23 @@ class BaseAPIView(generics.GenericAPIView, PathWalkerMixin):
         return fields
 
     def get_search_string(self, lower=True, decode=True):
-        search_str = self.request.query_params.dict().get(SEARCH_PARAM, '').strip()
+        search_str = self.get_raw_search_string().replace('"', '').replace("'", "")
         return CustomESSearch.get_search_string(search_str, lower=lower, decode=decode)
+
+    def get_raw_search_string(self):
+        return self.request.query_params.dict().get(SEARCH_PARAM, '').strip()
+
+    def get_search_must_haves(self):
+        pattern = r'"([^"]*)"'
+        matches = compact(re.findall(pattern, self.get_raw_search_string()))
+        result = []
+        for match in matches:
+            match = match.strip()
+            if ' ' in match:
+                result += match.split()
+            else:
+                result.append(match)
+        return set(result)
 
     @property
     def is_fuzzy_search(self):
@@ -254,10 +266,10 @@ class BaseAPIView(generics.GenericAPIView, PathWalkerMixin):
             expansions=expansions
         )
 
-    def get_wildcard_search_criterion(self):
+    def get_wildcard_search_criterion(self, search_str=None):
         fields = self.get_wildcard_search_fields()
         return CustomESSearch.get_wildcard_match_criterion(
-            search_str=self.get_search_string(),
+            search_str=search_str or self.get_search_string(),
             fields=fields
         ), fields.keys()
 
@@ -394,26 +406,16 @@ class BaseAPIView(generics.GenericAPIView, PathWalkerMixin):
         if self.facet_class:
             if self.is_user_document():
                 return facets
-            is_source_child_document_model = self.is_source_child_document_model()
-            default_filters = self.default_filters.copy()
-
-            if is_source_child_document_model and 'collection' not in self.kwargs and 'version' not in self.kwargs:
-                default_filters['is_latest_version'] = True
-
-            faceted_filters = {to_camel_case(k): v for k, v in self.get_faceted_filters(True).items()}
-            filters = {**default_filters, **self.get_facet_filters_from_kwargs(), **faceted_filters, 'retired': False}
-            if not self._should_exclude_retired_from_search_results() or not is_source_child_document_model:
-                filters.pop('retired')
-
             faceted_search = self.facet_class(  # pylint: disable=not-callable
                 self.get_search_string(lower=False),
-                filters=filters, exact_match=True
+                _search=self.__get_search_results(ignore_retired_filter=True, sort=False, highlight=False),
             )
             faceted_search.params(request_timeout=ES_REQUEST_TIMEOUT)
             try:
-                facets = faceted_search.execute().facets.to_dict()
+                s = faceted_search.execute()
+                facets = s.facets.to_dict()
             except TransportError as ex:  # pragma: no cover
-                raise Http400(detail=get(ex, 'error') or str(ex)) from ex
+                raise Http400(detail=get(ex, 'info') or get(ex, 'error') or str(ex)) from ex
 
         return facets
 
@@ -507,7 +509,7 @@ class BaseAPIView(generics.GenericAPIView, PathWalkerMixin):
 
         return (not collection or collection.startswith('!')) and (not version or version.startswith('!'))
 
-    def __apply_common_search_filters(self):
+    def __apply_common_search_filters(self, ignore_retired_filter=False):
         results = None
         if not self.should_perform_es_search():
             return results
@@ -526,7 +528,7 @@ class BaseAPIView(generics.GenericAPIView, PathWalkerMixin):
         if updated_since:
             results = results.query('range', last_update={"gte": updated_since})
 
-        if self._should_exclude_retired_from_search_results():
+        if not ignore_retired_filter and self._should_exclude_retired_from_search_results():
             results = results.query('match', retired=False)
 
         include_private = self._should_include_private()
@@ -572,7 +574,7 @@ class BaseAPIView(generics.GenericAPIView, PathWalkerMixin):
     ):
         results = self.__get_fuzzy_search_results(
             source_versions=source_versions, other_filters=other_filters, sort=False
-        ) if self.is_fuzzy_search else self.__search_results
+        ) if self.is_fuzzy_search else self.__get_search_results()
 
         results = results.extra(size=0)
         search = CustomESSearch(results)
@@ -598,9 +600,8 @@ class BaseAPIView(generics.GenericAPIView, PathWalkerMixin):
         criteria &= Q('match', owner_type=source_version.parent.resource_type)
         return criteria
 
-    @property
-    def __search_results(self):  # pylint: disable=too-many-branches,too-many-locals,too-many-statements
-        results = self.__apply_common_search_filters()
+    def __get_search_results(self, ignore_retired_filter=False, sort=True, highlight=True):  # pylint: disable=too-many-branches,too-many-locals,too-many-statements
+        results = self.__apply_common_search_filters(ignore_retired_filter)
         if results is None:
             return results
 
@@ -620,6 +621,12 @@ class BaseAPIView(generics.GenericAPIView, PathWalkerMixin):
             criterion |= self.get_fuzzy_search_criterion(boost_divide_by=10000, expansions=2)
 
         results = results.query(criterion)
+        must_have_criterion = None
+        for must_have in self.get_search_must_haves():
+            criteria, _ = self.get_wildcard_search_criterion(f"*{must_have}*")
+            must_have_criterion = criteria if must_have_criterion is None else must_have_criterion & criteria
+        if must_have_criterion is not None:
+            results = results.filter(must_have_criterion)
 
         if extras_fields:
             fields += list(extras_fields.keys())
@@ -663,9 +670,9 @@ class BaseAPIView(generics.GenericAPIView, PathWalkerMixin):
             else:
                 results = results.query('match', **{attr: value})
 
-        if self.request.query_params.get(INCLUDE_SEARCH_META_PARAM) in get_truthy_values():
+        if highlight and self.request.query_params.get(INCLUDE_SEARCH_META_PARAM) in get_truthy_values():
             results = results.highlight(*self.clean_fields_for_highlight(fields))
-        return results.sort(*self._get_sort_attribute())
+        return results.sort(*self._get_sort_attribute()) if sort else results
 
     @staticmethod
     def clean_fields_for_highlight(fields):
@@ -698,10 +705,10 @@ class BaseAPIView(generics.GenericAPIView, PathWalkerMixin):
                                      ' or fine tune your query to get more accurate results.') from ex
             raise ex
         except TransportError as ex:  # pragma: no cover
-            raise Http400(detail=get(ex, 'error') or str(ex)) from ex
+            raise Http400(detail=get(ex, 'info') or get(ex, 'error') or str(ex)) from ex
 
     def get_search_results_qs(self):
-        return self.__get_queryset_from_search_results(self.__search_results)
+        return self.__get_queryset_from_search_results(self.__get_search_results())
 
     def get_fuzzy_search_results_qs(
             self, source_versions=None, other_filters=None
