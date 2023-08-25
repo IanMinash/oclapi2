@@ -305,7 +305,7 @@ API_SUPERUSER_TOKEN = os.environ.get('API_SUPERUSER_TOKEN', '891b4b17feab99f3ff7
 REDIS_PORT = os.environ.get('REDIS_PORT', 6379)
 REDIS_DB = 0
 REDIS_HOST = os.environ.get('REDIS_HOST', 'redis')
-REDIS_URL = f"redis://{REDIS_HOST}:{REDIS_PORT}"
+REDIS_URL = f"redis://{REDIS_HOST}:{REDIS_PORT}/{REDIS_DB}"
 
 REDIS_SENTINELS = os.environ.get('REDIS_SENTINELS', None)
 REDIS_SENTINELS_MASTER = os.environ.get('REDIS_SENTINELS_MASTER', 'default')
@@ -314,6 +314,8 @@ REDIS_SENTINELS_LIST = []
 # django cache
 OPTIONS = {}
 if REDIS_SENTINELS:
+    DJANGO_REDIS_CONNECTION_FACTORY = 'django_redis.pool.SentinelConnectionFactory'
+
     for REDIS_SENTINEL in REDIS_SENTINELS.split(','):
         SENTINEL = REDIS_SENTINEL.split(':')
         REDIS_SENTINELS_LIST.append((SENTINEL[0], int(SENTINEL[1])))
@@ -326,7 +328,7 @@ if REDIS_SENTINELS:
 CACHES = {
     'default': {
         'BACKEND': 'django_redis.cache.RedisCache',
-        'LOCATION': REDIS_URL,
+        'LOCATION': f'redis://{REDIS_SENTINELS_MASTER}/{REDIS_DB}' if REDIS_SENTINELS_MASTER else REDIS_URL,
         'OPTIONS': OPTIONS
     }
 }
