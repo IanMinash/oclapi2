@@ -1035,7 +1035,7 @@ class TaskTest(OCLTestCase):
         import_run_mock.assert_called_once()
 
     @patch('core.common.tasks.EmailMessage')
-    def test_monthly_usage_report(self, email_message_mock):
+    def test_resources_report(self, email_message_mock):
         email_message_instance_mock = Mock(send=Mock(return_value=1))
         email_message_mock.return_value = email_message_instance_mock
         res = resources_report()
@@ -1045,7 +1045,7 @@ class TaskTest(OCLTestCase):
         email_message_instance_mock.attach.assert_called_once_with(ANY, ANY, 'text/csv')
         self.assertTrue('_resource_report_' in email_message_instance_mock.attach.call_args[0][0])
         self.assertTrue('.csv' in email_message_instance_mock.attach.call_args[0][0])
-        self.assertTrue(b'Resources Created' in email_message_instance_mock.attach.call_args[0][1])
+        self.assertTrue(b'OCL Usage Report' in email_message_instance_mock.attach.call_args[0][1])
 
         self.assertEqual(res, 1)
         call_args = email_message_mock.call_args[1]

@@ -110,6 +110,7 @@ class Mapping(MappingValidationMixin, SourceChildMixin, VersionedModel):
         'id': {'sortable': False, 'filterable': True, 'exact': True},
         'id_lowercase': {'sortable': True, 'filterable': False, 'exact': False},
         'last_update': {'sortable': True, 'filterable': False, 'facet': False, 'default': 'desc'},
+        'updated_by': {'sortable': False, 'filterable': False, 'facet': True},
         'from_concept': {'sortable': False, 'filterable': True, 'facet': False, 'exact': True},
         'to_concept': {'sortable': False, 'filterable': True, 'facet': False, 'exact': True},
         'retired': {'sortable': False, 'filterable': True, 'facet': True},
@@ -480,7 +481,7 @@ class Mapping(MappingValidationMixin, SourceChildMixin, VersionedModel):
         mapping.from_concept_name = self.from_concept_name
         mapping.from_source_url = self.from_source_url
         mapping.from_source_version = self.from_source_version
-
+        mapping.updated_by_id = self.updated_by_id
         mapping.save()
 
     @classmethod

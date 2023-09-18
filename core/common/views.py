@@ -25,7 +25,7 @@ from core.common.checksums import Checksum
 from core.common.constants import SEARCH_PARAM, LIST_DEFAULT_LIMIT, CSV_DEFAULT_LIMIT, \
     LIMIT_PARAM, NOT_FOUND, MUST_SPECIFY_EXTRA_PARAM_IN_BODY, INCLUDE_RETIRED_PARAM, VERBOSE_PARAM, HEAD, LATEST, \
     BRIEF_PARAM, ES_REQUEST_TIMEOUT, INCLUDE_INACTIVE, FHIR_LIMIT_PARAM, RAW_PARAM, SEARCH_MAP_CODES_PARAM, \
-    INCLUDE_SEARCH_META_PARAM, EXCLUDE_FUZZY_SEARCH_PARAM, EXCLUDE_WILDCARD_SEARCH_PARAM
+    INCLUDE_SEARCH_META_PARAM, EXCLUDE_FUZZY_SEARCH_PARAM, EXCLUDE_WILDCARD_SEARCH_PARAM, UPDATED_BY_USERNAME_PARAM
 from core.common.exceptions import Http400
 from core.common.mixins import PathWalkerMixin
 from core.common.search import CustomESSearch
@@ -208,12 +208,6 @@ class BaseAPIView(generics.GenericAPIView, PathWalkerMixin):
 
     def get_raw_search_string(self):
         return self.request.query_params.dict().get(SEARCH_PARAM, '').strip()
-
-    def get_search_must_haves(self):
-        return CustomESSearch.get_must_haves(self.get_raw_search_string())
-
-    def get_search_must_not_haves(self):
-        return CustomESSearch.get_must_not_haves(self.get_raw_search_string())
 
     @property
     def is_fuzzy_search(self):
@@ -402,7 +396,7 @@ class BaseAPIView(generics.GenericAPIView, PathWalkerMixin):
                 return facets
             faceted_search = self.facet_class(  # pylint: disable=not-callable
                 self.get_search_string(lower=False),
-                _search=self.__get_search_results(ignore_retired_filter=True, sort=False, highlight=False),
+                _search=self.__get_search_results(ignore_retired_filter=True, sort=False, highlight=False, force=True),
             )
             faceted_search.params(request_timeout=ES_REQUEST_TIMEOUT)
             try:
@@ -410,7 +404,8 @@ class BaseAPIView(generics.GenericAPIView, PathWalkerMixin):
                 facets = s.facets.to_dict()
             except TransportError as ex:  # pragma: no cover
                 raise Http400(detail=get(ex, 'info') or get(ex, 'error') or str(ex)) from ex
-
+        if not get(self.request.user, 'is_authenticated'):
+            facets.pop('updatedBy', None)
         return facets
 
     def get_extras_searchable_fields_from_query_params(self):
@@ -503,15 +498,19 @@ class BaseAPIView(generics.GenericAPIView, PathWalkerMixin):
 
         return (not collection or collection.startswith('!')) and (not version or version.startswith('!'))
 
-    def __apply_common_search_filters(self, ignore_retired_filter=False):
+    def __apply_common_search_filters(self, ignore_retired_filter=False, force=False):
         results = None
-        if not self.should_perform_es_search():
+        if not force and not self.should_perform_es_search():
             return results
 
         results = self.document_model.search()
         default_filters = self.default_filters.copy()
         if self.is_user_document() and self.should_include_inactive():
             default_filters.pop('is_active', None)
+
+        updated_by = self.request.query_params.get(UPDATED_BY_USERNAME_PARAM, None)
+        if updated_by:
+            results = results.query("terms", updated_by=compact(updated_by.split(',')))
         if self.is_source_child_document_model() and self.__should_query_latest_version():
             default_filters['is_latest_version'] = True
 
@@ -594,8 +593,8 @@ class BaseAPIView(generics.GenericAPIView, PathWalkerMixin):
         criteria &= Q('match', owner_type=source_version.parent.resource_type)
         return criteria
 
-    def __get_search_results(self, ignore_retired_filter=False, sort=True, highlight=True):  # pylint: disable=too-many-branches,too-many-locals,too-many-statements
-        results = self.__apply_common_search_filters(ignore_retired_filter)
+    def __get_search_results(self, ignore_retired_filter=False, sort=True, highlight=True, force=False):  # pylint: disable=too-many-branches,too-many-locals,too-many-statements
+        results = self.__apply_common_search_filters(ignore_retired_filter, force)
         if results is None:
             return results
 

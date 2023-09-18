@@ -624,11 +624,13 @@ def beat_healthcheck():  # pragma: no cover
 
 
 @app.task(ignore_result=True)
-def resources_report():  # pragma: no cover
+def resources_report(start_date=None, end_date=None):  # pragma: no cover
     # runs on first of every month
     # reports usage of prev month
     now = timezone.now().replace(day=1)
-    report = ResourceUsageReport(start_date=now - relativedelta(months=1), end_date=now)
+    start_date = start_date or now - relativedelta(months=1)
+    end_date = end_date or now
+    report = ResourceUsageReport(start_date=start_date, end_date=end_date)
     buff, file_name = report.generate()
     date_range_label = get_date_range_label(report.start_date, report.end_date)
     env = settings.ENV.upper()
@@ -723,3 +725,20 @@ def calculate_checksums(resource_type, resource_id):
                     instance.get_latest_version().set_checksums()
                 if not instance.is_versioned_object:
                     instance.versioned_object.set_checksums()
+
+
+@app.task(ignore_result=True)
+def concepts_update_updated_by():  # pragma: no cover
+    from core.concepts.models import Concept
+    resource_updated_update_by(Concept)
+
+
+@app.task(ignore_result=True)
+def mappings_update_updated_by():  # pragma: no cover
+    from core.mappings.models import Mapping
+    resource_updated_update_by(Mapping)
+
+
+def resource_updated_update_by(klass):  # pragma: no cover
+    for resource in klass.objects.filter(is_latest_version=True):
+        klass.objects.filter(id=resource.versioned_object_id).update(updated_by_id=resource.updated_by_id)

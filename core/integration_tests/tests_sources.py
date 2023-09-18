@@ -1195,7 +1195,7 @@ class SourceSummaryViewTest(OCLAPITestCase):
         self.assertEqual(response.data['active_concepts'], 2)
         self.assertEqual(response.data['active_mappings'], 1)
 
-    def test_get_200_verbose(self):
+    def test_get_200_verbose(self):  # pylint: disable=too-many-statements
         self.source.active_concepts = 2
         self.source.active_mappings = 1
         self.source.save()
@@ -1224,6 +1224,38 @@ class SourceSummaryViewTest(OCLAPITestCase):
                 'map_type': [(self.random_key, 1)],
                 'from_concept_source': [],
                 'to_concept_source': [],
+            }
+        )
+
+        response = self.client.get(
+            self.source.url + 'summary/?verbose=true',
+            HTTP_AUTHORIZATION=f'Token {self.source.created_by.get_token()}'
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['uuid'], str(self.source.id))
+        self.assertEqual(response.data['id'], self.source.mnemonic)
+        self.assertEqual(
+            response.data['concepts'],
+            {
+                'active': 2,
+                'retired': 0,
+                'concept_class': [(self.random_key, 2)],
+                'datatype': [(self.random_key, 2)],
+                'name_type': [],
+                'locale': [],
+                'contributors': [('ocladmin', 2)]
+            }
+        )
+        self.assertEqual(
+            response.data['mappings'],
+            {
+                'active': 1,
+                'retired': 0,
+                'map_type': [(self.random_key, 1)],
+                'from_concept_source': [],
+                'to_concept_source': [],
+                'contributors': [('ocladmin', 1)]
             }
         )
 
