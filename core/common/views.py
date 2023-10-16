@@ -1,5 +1,4 @@
 import base64
-import re
 from email.mime.image import MIMEImage
 
 import markdown
@@ -613,12 +612,6 @@ class BaseAPIView(generics.GenericAPIView, PathWalkerMixin):
         if not exclude_fuzzy:
             criterion |= self.get_fuzzy_search_criterion(boost_divide_by=10000, expansions=2)
         results = results.query(criterion)
-        must_have_criterion = None
-        for must_have in self.get_search_must_haves():
-            criteria, _ = self.get_wildcard_search_criterion(f"*{must_have}*")
-            must_have_criterion = criteria if must_have_criterion is None else must_have_criterion & criteria
-        if must_have_criterion is not None:
-            results = results.filter(must_have_criterion)
 
         must_not_have_criterion = self.get_mandatory_exclude_words_criteria()
         must_have_criterion = self.get_mandatory_words_criteria()
