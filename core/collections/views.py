@@ -2,7 +2,6 @@ import logging
 
 from celery_once import AlreadyQueued
 from django.conf import settings
-from django.core.exceptions import ValidationError
 from django.db import IntegrityError
 from django.db.models import Q
 from django.http import Http404
@@ -423,6 +422,20 @@ class CollectionReferencesView(
     def retrieve(self, request, *args, **kwargs):
         return self.list(request, *args, **kwargs)
 
+    @swagger_auto_schema(request_body=openapi.Schema(
+        type=openapi.TYPE_OBJECT,
+        properties={
+            'expressions': openapi.Schema(
+                type=openapi.TYPE_ARRAY,
+                items=openapi.Items(type=openapi.TYPE_STRING),
+                uniqueItems=True,
+                description='Expressions List from References, or * for ALL'
+            )
+        }
+    ))
+    def delete(self, request, *args, **kwargs):
+        return super().delete(request, *args, **kwargs)
+
     def destroy(self, request, *args, **kwargs):
         instance = self.get_object()
         expressions = request.data.get("references") or request.data.get("expressions")
@@ -642,7 +655,7 @@ class CollectionLatestVersionRetrieveUpdateView(CollectionVersionBaseView, Retri
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
-class CollectionVersionRetrieveUpdateDestroyView(CollectionBaseView, RetrieveAPIView, UpdateAPIView):
+class CollectionVersionRetrieveUpdateDestroyView(CollectionBaseView, RetrieveAPIView, UpdateAPIView, TaskMixin):
     serializer_class = CollectionVersionDetailSerializer
 
     def get_permissions(self):
@@ -676,14 +689,15 @@ class CollectionVersionRetrieveUpdateDestroyView(CollectionBaseView, RetrieveAPI
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
     def delete(self, _, **kwargs):  # pylint: disable=unused-argument
-        instance = self.get_object()
+        result = self.perform_task(delete_collection, (self.get_object().id,))
 
-        try:
-            instance.delete()
-        except ValidationError as ex:
-            return Response(ex.message_dict, status=status.HTTP_400_BAD_REQUEST)
+        if isinstance(result, Response):
+            return result
 
-        return Response(status=status.HTTP_204_NO_CONTENT)
+        if result is True:
+            return Response({'detail': DELETE_SUCCESS}, status=status.HTTP_204_NO_CONTENT)
+
+        return Response({'detail': get(result, 'messages', [DELETE_FAILURE])}, status=status.HTTP_400_BAD_REQUEST)
 
 
 class CollectionVersionExpansionsView(CollectionBaseView, ListWithHeadersMixin, CreateAPIView):

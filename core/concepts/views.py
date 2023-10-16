@@ -40,7 +40,6 @@ from core.concepts.serializers import (
     ConceptChildrenSerializer, ConceptParentsSerializer, ConceptLookupListSerializer)
 from core.mappings.serializers import MappingListSerializer
 
-
 TRUTHY = get_truthy_values()
 
 

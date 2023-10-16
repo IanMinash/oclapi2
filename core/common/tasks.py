@@ -86,6 +86,8 @@ def delete_collection(collection_id):
 
     try:
         logger.info('Found collection %s.  Beginning purge...', collection.mnemonic)
+        collection.references.all().delete()
+        collection.expansions.all().delete()
         collection.delete(force=True)
         logger.info('Delete complete!')
         return True
@@ -482,7 +484,7 @@ def batch_index_resources(resource, filters, update_indexed=False):
     model = get_resource_class_from_resource_name(resource)
     if isinstance(filters, str):
         filters = json.loads(filters)
-    if model:
+    if model and filters is not None:
         queryset = model.objects.filter(**filters)
         model.batch_index(queryset, model.get_search_document())
 
