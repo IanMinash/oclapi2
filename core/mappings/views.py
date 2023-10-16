@@ -26,6 +26,7 @@ from core.mappings.models import Mapping
 from core.mappings.search import MappingFacetedSearch
 from core.mappings.serializers import MappingDetailSerializer, MappingListSerializer, MappingVersionListSerializer, \
     MappingVersionDetailSerializer, MappingMinimalSerializer
+from core.toggles.models import Toggle
 
 
 class MappingBaseView(SourceChildCommonBaseView):
@@ -173,6 +174,11 @@ class MappingRetrieveUpdateDestroyView(MappingBaseView, RetrieveAPIView, UpdateA
             raise Http404()
 
         self.check_object_permissions(self.request, instance)
+
+        if Toggle.get('CHECKSUMS_TOGGLE'):
+            instance.get_checksums()
+            for version in instance.versions:
+                version.get_checksums()
 
         return instance
 
