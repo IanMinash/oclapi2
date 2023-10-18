@@ -89,6 +89,28 @@ class Source(DirtyFieldsMixin, ConceptContainerModel):
     OBJECT_TYPE = SOURCE_TYPE
     OBJECT_VERSION_TYPE = SOURCE_VERSION_TYPE
 
+    def get_standard_checksum_fields(self):
+        return {
+            'source_type': self.source_type,
+            'canonical_url': self.canonical_url,
+            'custom_validation_schema': self.custom_validation_schema,
+            'default_locale': self.default_locale,
+            'supported_locales': self.supported_locales,
+            'website': self.website,
+            'hierarchy_meaning': self.hierarchy_meaning,
+            'extras': self.extras,
+        }
+
+    def get_smart_checksum_fields(self):
+        return {
+            'source_type': self.source_type,
+            'canonical_url': self.canonical_url,
+            'custom_validation_schema': self.custom_validation_schema,
+            'default_locale': self.default_locale,
+            'released': self.released,
+            'retired': self.retired,
+        }
+
     @property
     def is_sequential_concept_mnemonic(self):
         return self.autoid_concept_mnemonic == AUTO_ID_SEQUENTIAL

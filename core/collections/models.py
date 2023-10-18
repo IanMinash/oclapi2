@@ -91,6 +91,27 @@ class Collection(ConceptContainerModel):
     autoexpand = models.BooleanField(default=True, null=True)
     expansion_uri = models.TextField(null=True, blank=True)
 
+    def get_standard_checksum_fields(self):
+        return {
+            'collection_type': self.collection_type,
+            'canonical_url': self.canonical_url,
+            'custom_validation_schema': self.custom_validation_schema,
+            'default_locale': self.default_locale,
+            'supported_locales': self.supported_locales,
+            'website': self.website,
+            'extras': self.extras,
+        }
+
+    def get_smart_checksum_fields(self):
+        return {
+            'collection_type': self.collection_type,
+            'canonical_url': self.canonical_url,
+            'custom_validation_schema': self.custom_validation_schema,
+            'default_locale': self.default_locale,
+            'released': self.released,
+            'retired': self.retired,
+        }
+
     def set_active_concepts(self):
         expansion = self.expansion
         if expansion:

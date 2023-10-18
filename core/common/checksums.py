@@ -1,5 +1,5 @@
-import json
 import hashlib
+import json
 from uuid import UUID
 
 from django.conf import settings
@@ -20,12 +20,10 @@ class ChecksumModel(models.Model):
     CHECKSUM_INCLUSIONS = []
     STANDARD_CHECKSUM_KEY = 'standard'
     SMART_CHECKSUM_KEY = 'smart'
-    CHECKSUM_TYPES = {STANDARD_CHECKSUM_KEY}
-    STANDARD_CHECKSUM_TYPES = {STANDARD_CHECKSUM_KEY}
 
-    def get_checksums(self, standard=False, queue=False):
+    def get_checksums(self, standard=False, queue=False, recalculate=False):
         if Toggle.get('CHECKSUMS_TOGGLE'):
-            if self.checksums and self.has_checksums(standard):
+            if not recalculate and self.checksums and self.has_checksums(standard):
                 return self.checksums
             if queue:
                 self.queue_checksum_calculation()
@@ -52,13 +50,16 @@ class ChecksumModel(models.Model):
         self.save(update_fields=['checksums'])
 
     def has_checksums(self, standard=False):
-        return self.has_standard_checksums() if standard else self.has_all_checksums()
+        return self.has_standard_checksum() if standard else self.has_all_checksums()
 
     def has_all_checksums(self):
-        return set(self.checksums.keys()) - set(self.CHECKSUM_TYPES) == set()
+        return self.has_standard_checksum() and self.has_smart_checksum()
 
-    def has_standard_checksums(self):
-        return set(self.checksums.keys()) - set(self.STANDARD_CHECKSUM_TYPES) == set()
+    def has_standard_checksum(self):
+        return self.STANDARD_CHECKSUM_KEY in self.checksums if self.STANDARD_CHECKSUM_KEY else True
+
+    def has_smart_checksum(self):
+        return self.SMART_CHECKSUM_KEY in self.checksums if self.SMART_CHECKSUM_KEY else True
 
     def set_checksums(self):
         if Toggle.get('CHECKSUMS_TOGGLE'):
@@ -92,7 +93,7 @@ class ChecksumModel(models.Model):
 
     def get_standard_checksums(self):
         if Toggle.get('CHECKSUMS_TOGGLE'):
-            checksums = {}
+            checksums = self.checksums or {}
             if self.STANDARD_CHECKSUM_KEY:
                 checksums[self.STANDARD_CHECKSUM_KEY] = self._calculate_standard_checksum()
             return checksums
@@ -110,17 +111,7 @@ class ChecksumModel(models.Model):
 
     @staticmethod
     def generate_checksum(data):
-        return Checksum.generate(data)
-
-    @staticmethod
-    def generate_queryset_checksum(queryset, standard=False):
-        _checksums = []
-        for instance in queryset:
-            instance.get_checksums(standard)
-            _checksums.append(instance.checksum)
-        if len(_checksums) == 1:
-            return _checksums[0]
-        return ChecksumModel.generate_checksum(_checksums)
+        return Checksum.generate(ChecksumModel._cleanup(data))
 
     def _calculate_standard_checksum(self):
         fields = self.get_standard_checksum_fields()
@@ -129,6 +120,19 @@ class ChecksumModel(models.Model):
     def _calculate_smart_checksum(self):
         fields = self.get_smart_checksum_fields()
         return self.generate_checksum(fields) if fields else None
+
+    @staticmethod
+    def _cleanup(fields):
+        if isinstance(fields, dict):
+            new_fields = {}
+            for key, value in fields.items():
+                if value is None:
+                    continue
+                if key in ['is_active', 'retired'] and not value:
+                    continue
+                new_fields[key] = value
+            return new_fields
+        return fields
 
     def _calculate_checksums(self):
         return self.get_all_checksums()
@@ -150,7 +154,6 @@ class Checksum:
             obj = obj[0]
         if isinstance(obj, list):
             return f"[{','.join(map(cls._serialize, generic_sort(obj)))}]"
-
         if isinstance(obj, dict):
             keys = generic_sort(obj.keys())
             acc = f"{{{json.dumps(keys)}"

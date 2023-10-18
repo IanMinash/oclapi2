@@ -39,6 +39,7 @@ from core.sources.serializers import (
     SourceVersionSummaryDetailSerializer, SourceMinimalSerializer, SourceSummaryVerboseSerializer,
     SourceVersionSummaryVerboseSerializer, SourceSummaryFieldDistributionSerializer,
     SourceVersionSummaryFieldDistributionSerializer, SourceVersionMinimalSerializer)
+from core.toggles.models import Toggle
 
 logger = logging.getLogger('oclapi')
 
@@ -196,6 +197,11 @@ class SourceRetrieveUpdateDestroyView(SourceBaseView, ConceptDictionaryUpdateMix
                     version.update_concepts_count()
                 if version.should_set_active_mappings:
                     version.update_mappings_count()
+
+        if Toggle.get('CHECKSUMS_TOGGLE'):
+            instance.get_checksums()
+            for version in instance.versions:
+                version.get_checksums()
 
         return instance
 
@@ -436,6 +442,7 @@ class SourceVersionRetrieveUpdateDestroyView(SourceVersionBaseView, RetrieveAPIV
         if serializer.is_valid():
             self.object = serializer.save(force_update=True)
             if serializer.is_valid():
+                self.object.get_checksums(recalculate=False)
                 return Response(serializer.data, status=status.HTTP_200_OK)
 
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)

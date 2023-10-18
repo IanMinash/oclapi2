@@ -109,6 +109,7 @@ class MappingListSerializer(AbstractMappingSerializer):
     sort_weight = FloatField(required=False, allow_null=True)
     version_updated_on = DateTimeField(source='updated_at', read_only=True)
     version_updated_by = DateTimeField(source='updated_by.username', read_only=True)
+    checksums = SerializerMethodField()
 
     class Meta:
         model = Mapping
@@ -122,20 +123,23 @@ class MappingListSerializer(AbstractMappingSerializer):
             'is_latest_version', 'update_comment', 'version_url', 'uuid', 'version_created_on',
             'from_source_version', 'to_source_version', 'from_concept_name_resolved',
             'to_concept_name_resolved', 'type', 'sort_weight',
-            'version_updated_on', 'version_updated_by'
+            'version_updated_on', 'version_updated_by', 'checksums'
         )
+
+    @staticmethod
+    def get_checksums(obj):
+        return obj.get_checksums()
 
 
 class MappingVersionListSerializer(MappingListSerializer):
     previous_version_url = CharField(read_only=True, source='prev_version_uri')
     source_versions = ListField(read_only=True)
     collection_versions = ListField(read_only=True)
-    checksums = SerializerMethodField()
 
     class Meta:
         model = Mapping
         fields = MappingListSerializer.Meta.fields + (
-            'previous_version_url', 'source_versions', 'collection_versions', 'checksums'
+            'previous_version_url', 'source_versions', 'collection_versions'
         )
 
     def __init__(self, *args, **kwargs):
@@ -150,10 +154,6 @@ class MappingVersionListSerializer(MappingListSerializer):
             self.fields.pop('collection_versions', None)
 
         super().__init__(*args, **kwargs)
-
-    @staticmethod
-    def get_checksums(obj):
-        return obj.get_checksums(queue=True)
 
 
 class MappingMinimalSerializer(AbstractMappingSerializer):
@@ -222,7 +222,6 @@ class MappingDetailSerializer(MappingListSerializer):
     to_source = SourceDetailSerializer()
     created_on = DateTimeField(source='created_at', read_only=True)
     updated_on = DateTimeField(source='updated_at', read_only=True)
-    checksums = SerializerMethodField()
 
     class Meta:
         model = Mapping
@@ -242,10 +241,6 @@ class MappingDetailSerializer(MappingListSerializer):
         if errors:
             self._errors.update(errors)
         return instance
-
-    @staticmethod
-    def get_checksums(obj):
-        return obj.get_checksums(queue=True)
 
 
 class MappingVersionDetailSerializer(MappingDetailSerializer):

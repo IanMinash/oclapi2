@@ -1317,8 +1317,27 @@ class ChecksumTest(OCLTestCase):
         self.assertEqual(Checksum.generate({'a': 1.1}), Checksum.generate({'a': 1.10}))
 
         # value order
-        self.assertEqual(Checksum.generate({'a': [1, 2, 3]}), Checksum.generate({'a': [2, 1, 3]}))
         self.assertEqual(Checksum.generate([1, 2, 3]), Checksum.generate([2, 1, 3]))
+        self.assertEqual(Checksum.generate({'a': [1, 2, 3]}), Checksum.generate({'a': [2, 1, 3]}))
+        self.assertEqual(
+            Checksum.generate({'a': {'b': [1, 2, 3], 'c': 'd'}}), Checksum.generate({'a': {'c': 'd', 'b': [3, 1, 2]}}))
+        self.assertEqual(
+            Checksum.generate(
+                [
+                    {'foo': 'bar', 'bar': 'foo'},
+                    {'1': '2',}
+                ]
+            ),
+            Checksum.generate(
+                [
+                    {'1': '2',},
+                    {'foo': 'bar', 'bar': 'foo'}
+                ]
+            )
+        )
+        self.assertIsNotNone(Checksum.generate(uuid.uuid4()))
+        self.assertNotEqual(
+            Checksum.generate({'a': {'b': [1, 2, 3], 'c': 'd'}}), Checksum.generate({'a': {'c': [1, 2, 3], 'b': 'd'}}))
 
 
 class ChecksumViewTest(OCLAPITestCase):
