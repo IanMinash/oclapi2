@@ -98,6 +98,7 @@ INSTALLED_APPS = [
     'core.client_configs',
     'core.tasks',
     'core.toggles',
+    'core.repos',
 ]
 REST_FRAMEWORK = {
     'DEFAULT_PERMISSION_CLASSES': (
@@ -357,13 +358,6 @@ CACHES = {
 }
 
 # Celery
-RETRY_POLICY = {
-    'max_retries': 10,
-    'interval_start': 0,
-    'interval_step': 1,
-    'interval_max': 10
-}
-
 CELERY_ENABLE_UTC = True
 CELERY_TIMEZONE = "UTC"
 CELERY_ALWAYS_EAGER = False
@@ -395,7 +389,7 @@ CELERY_RESULT_BACKEND_TRANSPORT_OPTIONS = {
     'socket_connect_timeout': 5.0,
     'retry_policy': {
         'timeout': 5.0
-    } | RETRY_POLICY
+    }
 }
 CELERY_RESULT_EXTENDED = True
 CELERY_RESULT_EXPIRES = 259200  # 72 hours
@@ -406,7 +400,7 @@ CELERY_BROKER_TRANSPORT_OPTIONS = {
     'socket_connect_timeout': 5.0,
     'retry_policy': {
         'timeout': 5.0
-    } | RETRY_POLICY
+    }
 }
 
 if REDIS_SENTINELS:
@@ -437,7 +431,7 @@ CELERY_BROKER_HEARTBEAT = None
 CELERY_TASK_PUBLISH_RETRY = True
 CELERY_TASK_PUBLISH_RETRY_POLICY = {
     'retry_errors': None,
-} | RETRY_POLICY
+}
 
 CELERY_ACCEPT_CONTENT = ['application/json']
 CELERY_ONCE = {
@@ -516,6 +510,7 @@ OIDC_RP_CLIENT_SECRET = ''  # only needed a defined var in mozilla_django_oidc
 OIDC_SERVER_INTERNAL_URL = os.environ.get('OIDC_SERVER_INTERNAL_URL', '') or OIDC_SERVER_URL
 OIDC_REALM = os.environ.get('OIDC_REALM', 'ocl')
 OIDC_OP_AUTHORIZATION_ENDPOINT = f'{OIDC_SERVER_URL}/realms/{OIDC_REALM}/protocol/openid-connect/auth'
+OIDC_OP_REGISTRATION_ENDPOINT = f'{OIDC_SERVER_URL}/realms/{OIDC_REALM}/protocol/openid-connect/registrations'
 OIDC_OP_LOGOUT_ENDPOINT = f'{OIDC_SERVER_URL}/realms/{OIDC_REALM}/protocol/openid-connect/logout'
 OIDC_OP_TOKEN_ENDPOINT = f'{OIDC_SERVER_INTERNAL_URL}/realms/{OIDC_REALM}/protocol/openid-connect/token'
 OIDC_OP_USER_ENDPOINT = f'{OIDC_SERVER_INTERNAL_URL}/realms/{OIDC_REALM}/protocol/openid-connect/userinfo'

@@ -14,10 +14,11 @@ from django.core.files.base import ContentFile, File
 from django.core.management import call_command
 from django.test import TestCase
 from django.test.runner import DiscoverRunner
+from mock.mock import call
 from moto import mock_s3
 from requests.auth import HTTPBasicAuth
 from rest_framework.exceptions import ValidationError
-from rest_framework.test import APITestCase
+from rest_framework.test import APITestCase, APITransactionTestCase
 
 from core.collections.models import CollectionReference
 from core.common.constants import HEAD
@@ -204,6 +205,14 @@ class BaseTestCase(SetupTestEnvironment):
             names=[ConceptNameFactory.build(name="English")]
         )
 
+class OCLAPITransactionTestCase(APITransactionTestCase, BaseTestCase):
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        call_command("loaddata", "core/fixtures/base_entities.yaml")
+        call_command("loaddata", "core/fixtures/toggles.json")
+        org = Organization.objects.get(id=1)
+        org.members.add(1)
 
 class OCLAPITestCase(APITestCase, BaseTestCase):
     @classmethod
@@ -1272,7 +1281,9 @@ class OCLOIDCAuthenticationBackendTest(OCLTestCase):
             email='batman@gotham.com',
             first_name='Bruce',
             last_name='Wayne',
-            verified=True
+            verified=True,
+            company=None,
+            location=None
         )
 
     def test_update_user(self):
@@ -1347,8 +1358,28 @@ class ChecksumViewTest(OCLAPITestCase):
     @patch('core.common.checksums.Checksum.generate')
     def test_post_400(self, checksum_generate_mock):
         response = self.client.post(
-            '/$checksum/',
-            data={},
+            '/$checksum/standard/',
+            {},
+            HTTP_AUTHORIZATION=f"Token {self.token}",
+            format='json'
+        )
+
+        self.assertEqual(response.status_code, 400)
+        checksum_generate_mock.assert_not_called()
+
+        response = self.client.post(
+            '/$checksum/smart/',
+            {"foo": "bar"},
+            HTTP_AUTHORIZATION=f"Token {self.token}",
+            format='json'
+        )
+
+        self.assertEqual(response.status_code, 400)
+        checksum_generate_mock.assert_not_called()
+
+        response = self.client.post(
+            '/$checksum/smart/?resource=foobar',
+            {"foo": "bar"},
             HTTP_AUTHORIZATION=f"Token {self.token}",
             format='json'
         )
@@ -1357,16 +1388,143 @@ class ChecksumViewTest(OCLAPITestCase):
         checksum_generate_mock.assert_not_called()
 
     @patch('core.common.checksums.Checksum.generate')
-    def test_post_200(self, checksum_generate_mock):
+    def test_post_200_concept(self, checksum_generate_mock):
         checksum_generate_mock.return_value = 'checksum'
 
         response = self.client.post(
-            '/$checksum/',
-            data={'foo': 'bar'},
+            '/$checksum/standard/?resource=concept_version',
+            data={'foo': 'bar', 'concept_class': 'foobar', 'extras': {}},
             HTTP_AUTHORIZATION=f"Token {self.token}",
             format='json'
         )
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data, 'checksum')
-        checksum_generate_mock.assert_called_once_with({'foo': 'bar'})
+        checksum_generate_mock.assert_called_once_with({'concept_class': 'foobar', 'names': []})
+
+    @patch('core.common.checksums.Checksum.generate')
+    def test_post_200_mapping_standard(self, checksum_generate_mock):
+        checksum_generate_mock.side_effect = ['checksum1', 'checksum2', 'checksum3']
+
+        response = self.client.post(
+            '/$checksum/standard/?resource=mapping',
+            data=[
+                {
+                    'id': 'bar',
+                    'map_type': 'foobar',
+                    'from_concept_url': '/foo/',
+                    'to_source_url': '/bar/',
+                    'from_concept_code': 'foo',
+                    'to_concept_code': 'bar',
+                    'from_concept_name': 'fooName',
+                    'to_concept_name': 'barName',
+                    'retired': False,
+                    'extras': {
+                        'foo': 'bar'
+                    }
+                },
+                {
+                    'id': 'barbara',
+                    'map_type': 'foobarbara',
+                    'from_concept_url': '/foobara/',
+                    'to_source_url': '/barbara/',
+                    'from_concept_code': 'foobara',
+                    'to_concept_code': 'barbara',
+                    'from_concept_name': 'foobaraName',
+                    'to_concept_name': 'barbaraName',
+                    'retired': True,
+                    'extras': {
+                        'foo': 'barbara'
+                    }
+                }
+            ],
+            HTTP_AUTHORIZATION=f"Token {self.token}",
+            format='json'
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data, 'checksum3')
+        self.assertEqual(checksum_generate_mock.call_count, 3)
+        self.assertEqual(
+            checksum_generate_mock.mock_calls,
+            [
+                call({
+                    'map_type': 'foobar',
+                    'from_concept_code': 'foo',
+                    'to_concept_code': 'bar',
+                    'from_concept_name': 'fooName',
+                    'to_concept_name': 'barName',
+                    'extras': {'foo': 'bar'}
+                }),
+                call({
+                    'map_type': 'foobarbara',
+                    'from_concept_code': 'foobara',
+                    'to_concept_code': 'barbara',
+                    'from_concept_name': 'foobaraName',
+                    'to_concept_name': 'barbaraName',
+                    'extras': {'foo': 'barbara'}
+                }),
+                call(['checksum1', 'checksum2'])
+            ]
+        )
+
+    @patch('core.common.checksums.Checksum.generate')
+    def test_post_200_mapping_smart(self, checksum_generate_mock):
+        checksum_generate_mock.side_effect = ['checksum1', 'checksum2', 'checksum3']
+
+        response = self.client.post(
+            '/$checksum/smart/?resource=mapping',
+            data=[
+                {
+                    'id': 'bar',
+                    'map_type': 'foobar',
+                    'from_concept_url': '/foo/',
+                    'to_source_url': '/bar/',
+                    'from_concept_code': 'foo',
+                    'to_concept_code': 'bar',
+                    'from_concept_name': 'fooName',
+                    'to_concept_name': 'barName',
+                    'retired': False,
+                    'extras': {'foo': 'bar'}
+                },
+                {
+                    'id': 'barbara',
+                    'map_type': 'foobarbara',
+                    'from_concept_url': '/foobara/',
+                    'to_source_url': '/barbara/',
+                    'from_concept_code': 'foobara',
+                    'to_concept_code': 'barbara',
+                    'from_concept_name': 'foobaraName',
+                    'to_concept_name': 'barbaraName',
+                    'retired': True,
+                    'extras': {'foo': 'barbara'}
+                }
+            ],
+            HTTP_AUTHORIZATION=f"Token {self.token}",
+            format='json'
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data, 'checksum3')
+        self.assertEqual(checksum_generate_mock.call_count, 3)
+        self.assertEqual(
+            checksum_generate_mock.mock_calls,
+            [
+                call({
+                      'map_type': 'foobar',
+                      'from_concept_code': 'foo',
+                      'to_concept_code': 'bar',
+                      'from_concept_name': 'fooName',
+                      'to_concept_name': 'barName'
+                }),
+                call({
+                      'map_type': 'foobarbara',
+                      'from_concept_code': 'foobara',
+                      'to_concept_code': 'barbara',
+                      'from_concept_name': 'foobaraName',
+                      'to_concept_name': 'barbaraName',
+                      'retired': True
+                }),
+                call(['checksum1', 'checksum2'])
+            ]
+        )

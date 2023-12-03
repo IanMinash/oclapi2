@@ -92,24 +92,32 @@ class Collection(ConceptContainerModel):
     expansion_uri = models.TextField(null=True, blank=True)
 
     def get_standard_checksum_fields(self):
-        return {
-            'collection_type': self.collection_type,
-            'canonical_url': self.canonical_url,
-            'custom_validation_schema': self.custom_validation_schema,
-            'default_locale': self.default_locale,
-            'supported_locales': self.supported_locales,
-            'website': self.website,
-            'extras': self.extras,
-        }
+        return self.get_standard_checksum_fields_for_resource(self)
 
     def get_smart_checksum_fields(self):
+        return self.get_smart_checksum_fields_for_resource(self)
+
+    @staticmethod
+    def get_standard_checksum_fields_for_resource(data):
         return {
-            'collection_type': self.collection_type,
-            'canonical_url': self.canonical_url,
-            'custom_validation_schema': self.custom_validation_schema,
-            'default_locale': self.default_locale,
-            'released': self.released,
-            'retired': self.retired,
+            'collection_type': get(data, 'collection_type'),
+            'canonical_url': get(data, 'canonical_url'),
+            'custom_validation_schema': get(data, 'custom_validation_schema'),
+            'default_locale': get(data, 'default_locale'),
+            'supported_locales': get(data, 'supported_locales'),
+            'website': get(data, 'website'),
+            'extras': get(data, 'extras'),
+        }
+
+    @staticmethod
+    def get_smart_checksum_fields_for_resource(data):
+        return {
+            'collection_type': get(data, 'collection_type'),
+            'canonical_url': get(data, 'canonical_url'),
+            'custom_validation_schema': get(data, 'custom_validation_schema'),
+            'default_locale': get(data, 'default_locale'),
+            'released': get(data, 'released'),
+            'retired': get(data, 'retired'),
         }
 
     def set_active_concepts(self):
@@ -1038,13 +1046,13 @@ class Expansion(BaseResourceModel):
             concepts = reference.concepts
             if concepts.exists():
                 index_concepts = True
-                filters = {'id__in': list(concepts.values_list('id', flat=True))}
+                filters = {'versioned_object_id__in': list(concepts.values_list('versioned_object_id', flat=True))}
                 self.concepts.set(self.concepts.exclude(**filters))
                 batch_index_resources.apply_async(('concept', filters), queue='indexing')
             mappings = reference.mappings
             if mappings.exists():
                 index_mappings = True
-                filters = {'id__in': list(mappings.values_list('id', flat=True))}
+                filters = {'versioned_object_id__in': list(mappings.values_list('versioned_object_id', flat=True))}
                 self.mappings.set(self.mappings.exclude(**filters))
                 batch_index_resources.apply_async(('mapping', filters), queue='indexing')
 

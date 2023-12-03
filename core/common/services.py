@@ -592,6 +592,15 @@ class OIDCAuthService(AbstractAuthService):
         )
 
     @staticmethod
+    def get_registration_redirect_url(client_id, redirect_uri, state, nonce):
+        return f"{settings.OIDC_OP_REGISTRATION_ENDPOINT}?" \
+               f"response_type=code id_token&" \
+               f"client_id={client_id}&" \
+               f"state={state}&" \
+               f"nonce={nonce}&" \
+               f"redirect_uri={redirect_uri}"
+
+    @staticmethod
     def get_logout_redirect_url(id_token_hint, redirect_uri):
         return (
             f"{settings.OIDC_OP_LOGOUT_ENDPOINT}?"
