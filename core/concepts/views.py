@@ -13,6 +13,7 @@ from rest_framework.views import APIView
 
 from core.bundles.models import Bundle
 from core.bundles.serializers import BundleSerializer
+from core.collections.documents import CollectionDocument
 from core.common.constants import (
     HEAD, INCLUDE_INVERSE_MAPPINGS_PARAM, INCLUDE_RETIRED_PARAM, ACCESS_TYPE_NONE)
 from core.common.exceptions import Http400, Http403
@@ -23,7 +24,7 @@ from core.common.swagger_parameters import (
     compress_header, include_source_versions_param, include_collection_versions_param, cascade_method_param,
     cascade_map_types_param, cascade_exclude_map_types_param, cascade_hierarchy_param, cascade_mappings_param,
     cascade_levels_param, cascade_direction_param, cascade_view_hierarchy, return_map_types_param,
-    omit_if_exists_in_param, equivalency_map_types_param)
+    omit_if_exists_in_param, equivalency_map_types_param, search_from_latest_repo_header)
 from core.common.tasks import delete_concept, make_hierarchy
 from core.common.utils import to_parent_uri_from_kwargs, generate_temp_version, get_truthy_values
 from core.common.views import SourceChildCommonBaseView, SourceChildExtrasView, \
@@ -190,7 +191,7 @@ class ConceptListView(ConceptBaseView, ListWithHeadersMixin, CreateModelMixin):
         manual_parameters=[
             q_param, limit_param, sort_desc_param, sort_asc_param, page_param, verbose_param,
             include_retired_param, include_inverse_mappings_param, updated_since_param,
-            include_facets_header, compress_header
+            include_facets_header, compress_header, search_from_latest_repo_header
         ]
     )
     def get(self, request, *args, **kwargs):
@@ -243,6 +244,8 @@ class ConceptSummaryView(ConceptBaseView, RetrieveAPIView):
 
 
 class ConceptCollectionMembershipView(ConceptBaseView, ListWithHeadersMixin):
+    document_model = CollectionDocument
+
     def get_serializer_class(self):
         from core.collections.serializers import CollectionVersionListSerializer
         return CollectionVersionListSerializer

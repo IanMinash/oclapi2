@@ -106,13 +106,24 @@ def ignore_json_paths(json_input, json_response, paths):
         update_json(json_input, path, None)
         update_json(json_response, path, None)
 
+def ignore_json_paths_if_not_in_input(json_input, json_response, paths):
+    for path in paths:
+        jsonpath_expr = parse(path)
+        if not jsonpath_expr.find(json_input):
+            update_json(json_input, path, None)
+            update_json(json_response, path, None)
+
 
 def validate_jsons(json_file, json_response):
     adjust_to_ocl_format(json_file)
 
     ignore_json_paths(json_file, json_response, ['date', 'identifier', 'meta',
-                                                 'revisionDate', 'count', 'concept[*].definition',
-                                                 'concept[*].designation', 'concept[*].display', 'property[*].uri'])
+                                                 'revisionDate'])
+
+    ignore_json_paths_if_not_in_input(json_file, json_response, ['count', 'concept[*].definition', 'concept[*].id',
+                                                                 'concept[*].designation', 'concept[*].display',
+                                                                 'property[*].uri'])
+
     diff = jsondiff.diff(json_file, json_response, syntax='explicit', marshal=True)
     if diff:
         diff = json.dumps(diff, indent=4)
@@ -174,18 +185,6 @@ def create(file, target, secret, resources=[], validate=False):
 
 def import_resources(source, target, secret, resources=['CodeSystem', 'ValueSet', 'ConceptMap'], clear=None,
                      validate=False):
-    if not resources:
-        resources = ['CodeSystem', 'ValueSet', 'ConceptMap']
-        
-    if os.path.isdir(source):
-        directory = pathlib.Path(source)
-        pattern = "**/*"
-        files = filter(lambda item: item.is_file(), directory.glob(pattern))
-    elif os.path.isfile(source):
-        files = [source]
-    else:
-        raise FileNotFoundError("Source must be a file or directory")
-
     if clear:
         clear = clear.rstrip('/')
 
@@ -217,6 +216,21 @@ def import_resources(source, target, secret, resources=['CodeSystem', 'ValueSet'
             error = f"Unable to create {clear} [{result.status_code}] {result.content}."
             logging.error(error)
             return {'imported': [], 'skipped': 0, 'total': 0, 'errors': [error]}
+
+    if not source:
+        return
+
+    if not resources:
+        resources = ['CodeSystem', 'ValueSet', 'ConceptMap']
+        
+    if os.path.isdir(source):
+        directory = pathlib.Path(source)
+        pattern = "**/*"
+        files = filter(lambda item: item.is_file(), directory.glob(pattern))
+    elif os.path.isfile(source):
+        files = [source]
+    else:
+        raise FileNotFoundError("Source must be a file or directory")
 
     resources_count = 0
     more = ''
@@ -342,7 +356,7 @@ def import_resources(source, target, secret, resources=['CodeSystem', 'ValueSet'
 def main():
     logging.getLogger().setLevel(logging.INFO)
     arg_parser = argparse.ArgumentParser(description="Tool for importing resources.")
-    arg_parser.add_argument("-f", "--from", dest="from_", help="File, directory or URL to import", required=True,
+    arg_parser.add_argument("-f", "--from", dest="from_", help="File, directory or URL to import", required=False,
                             type=str)
     arg_parser.add_argument("-t", "--to", help="API path pointing to a container for imported resources, e.g. "
                             "https://fhir.openconceptlab.org/orgs/test_org", required=True, type=str)

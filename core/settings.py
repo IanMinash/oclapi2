@@ -41,6 +41,7 @@ ALLOWED_HOSTS = ['*']
 CORS_ALLOW_HEADERS = default_headers + (
     'INCLUDEFACETS',
     'INCLUDESEARCHSTATS',
+    'INCLUDESEARCHLATEST'
 )
 
 CORS_EXPOSE_HEADERS = (
@@ -195,6 +196,8 @@ DATABASES = {
     }
 }
 
+DB_CURSOR_ON = os.environ.get('DB_CURSOR_ON', 'true').lower() == 'true'
+
 ES_HOST = os.environ.get('ES_HOST', 'es')  # Deprecated. Use ES_HOSTS instead.
 ES_PORT = os.environ.get('ES_PORT', '9200')  # Deprecated. Use ES_HOSTS instead.
 ES_HOSTS = os.environ.get('ES_HOSTS', None)
@@ -330,6 +333,10 @@ if REDIS_SENTINELS:
     REDIS_SENTINELS_MASTER = os.environ.get('REDIS_SENTINELS_MASTER', 'default')
     REDIS_SENTINELS_LIST = []
 
+REDIS_SENTINELS = os.environ.get('REDIS_SENTINELS', None)
+REDIS_SENTINELS_MASTER = os.environ.get('REDIS_SENTINELS_MASTER', 'default')
+REDIS_SENTINELS_LIST = []
+
 # django cache
 OPTIONS = {
     'CONNECTION_POOL_KWARGS': {
@@ -391,6 +398,7 @@ CELERY_RESULT_BACKEND_TRANSPORT_OPTIONS = {
         'timeout': 5.0
     }
 }
+
 CELERY_RESULT_EXTENDED = True
 CELERY_RESULT_EXPIRES = 259200  # 72 hours
 
@@ -522,3 +530,10 @@ OIDC_RP_SCOPES = 'openid profile email'
 OIDC_STORE_ACCESS_TOKEN = True
 OIDC_CREATE_USER = True
 OIDC_CALLBACK_CLASS = 'core.users.views.OCLOIDCAuthenticationCallbackView'
+
+# Profiler Django Silk
+if ENV == 'development':
+    INSTALLED_APPS = [*INSTALLED_APPS, 'silk']
+    # MIDDLEWARE = [*MIDDLEWARE, "silk.middleware.SilkyMiddleware"]
+    # SILKY_PYTHON_PROFILER = True
+    # SILKY_PYTHON_PROFILER_RESULT_PATH = '/code/core/'

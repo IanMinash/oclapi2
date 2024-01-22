@@ -11,11 +11,11 @@ from pydash import get
 from core.common.constants import HEAD
 from core.common.models import ConceptContainerModel
 from core.common.services import PostgresQL
-from core.common.tasks import update_mappings_source
+from core.common.tasks import update_mappings_source, index_source_concepts, index_source_mappings
 from core.common.validators import validate_non_negative
 from core.concepts.models import ConceptName, Concept
 from core.sources.constants import SOURCE_TYPE, SOURCE_VERSION_TYPE, HIERARCHY_ROOT_MUST_BELONG_TO_SAME_SOURCE, \
-    HIERARCHY_MEANINGS, AUTO_ID_CHOICES, AUTO_ID_SEQUENTIAL, AUTO_ID_UUID
+    HIERARCHY_MEANINGS, AUTO_ID_CHOICES, AUTO_ID_SEQUENTIAL, AUTO_ID_UUID, LOCALE_EXTERNAL_AUTO_ID_CHOICES
 
 
 class Source(DirtyFieldsMixin, ConceptContainerModel):
@@ -85,6 +85,10 @@ class Source(DirtyFieldsMixin, ConceptContainerModel):
         default=DEFAULT_AUTO_ID_START_FROM, validators=[validate_non_negative])
     autoid_mapping_external_id_start_from = models.IntegerField(
         default=DEFAULT_AUTO_ID_START_FROM, validators=[validate_non_negative])
+    autoid_concept_name_external_id = models.CharField(
+        null=True, blank=True, choices=LOCALE_EXTERNAL_AUTO_ID_CHOICES, max_length=10)
+    autoid_concept_description_external_id = models.CharField(
+        null=True, blank=True, choices=LOCALE_EXTERNAL_AUTO_ID_CHOICES, max_length=10)
 
     OBJECT_TYPE = SOURCE_TYPE
     OBJECT_VERSION_TYPE = SOURCE_VERSION_TYPE
@@ -142,6 +146,14 @@ class Source(DirtyFieldsMixin, ConceptContainerModel):
     @property
     def concept_external_id_next(self):
         return self.get_resource_next_attr_id(self.autoid_concept_external_id, self.concepts_external_id_seq_name)
+
+    @property
+    def concept_name_external_id_next(self):
+        return self.get_resource_next_attr_id(self.autoid_concept_name_external_id, None)
+
+    @property
+    def concept_description_external_id_next(self):
+        return self.get_resource_next_attr_id(self.autoid_concept_description_external_id, None)
 
     @property
     def mapping_mnemonic_next(self):
@@ -287,6 +299,34 @@ class Source(DirtyFieldsMixin, ConceptContainerModel):
         if self.is_head:
             queryset = self.mappings_set.filter(id=F('versioned_object_id'))
         self.active_mappings = queryset.filter(retired=False, is_active=True).count()
+
+    def index_resources_for_self_as_latest_released(self):
+        """
+        1. Assumes self is the latest released version
+        2. indexes prev released version's (if exists) concepts and mappings
+        3. indexes this new released version's concepts and mappings
+        """
+        if self.is_latest_released:
+            prev_released_version = self.get_prev_released_version()
+            if prev_released_version:
+                index_source_concepts.delay(prev_released_version.id)
+                index_source_mappings.delay(prev_released_version.id)
+            index_source_concepts.delay(self.id)
+            index_source_mappings.delay(self.id)
+
+    def index_resources_for_self_as_unreleased(self):
+        """
+        1. Assumes self moved from released to unreleased
+        2. indexes this unreleased version's concepts and mappings
+        3. indexes latest released version's (if exists) concepts and mappings
+        """
+        if not self.released:
+            index_source_concepts.delay(self.id)
+            index_source_mappings.delay(self.id)
+            latest_released = self.get_latest_released_version()
+            if latest_released:
+                index_source_concepts.delay(latest_released.id)
+                index_source_mappings.delay(latest_released.id)
 
     def seed_concepts(self, index=True):
         head = self.head
