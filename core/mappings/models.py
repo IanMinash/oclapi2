@@ -10,7 +10,6 @@ from pydash import get
 from core.common.constants import NAMESPACE_REGEX, LATEST
 from core.common.mixins import SourceChildMixin
 from core.common.models import VersionedModel
-from core.common.services import PostgresQL
 from core.common.tasks import batch_index_resources
 from core.common.utils import separate_version, to_parent_uri, generate_temp_version, \
     encode_string, is_url_encoded_string
@@ -18,6 +17,7 @@ from core.mappings.constants import MAPPING_TYPE, MAPPING_IS_ALREADY_RETIRED, MA
     MAPPING_IS_ALREADY_NOT_RETIRED, MAPPING_WAS_UNRETIRED, PERSIST_CLONE_ERROR, PERSIST_CLONE_SPECIFY_USER_ERROR, \
     ALREADY_EXISTS
 from core.mappings.mixins import MappingValidationMixin
+from core.services.storages.postgres import PostgresQL
 
 
 class Mapping(MappingValidationMixin, SourceChildMixin, VersionedModel):
@@ -49,6 +49,16 @@ class Mapping(MappingValidationMixin, SourceChildMixin, VersionedModel):
                           name='mappings_sort_weight_next',
                           fields=['from_concept_id', 'sort_weight', 'parent_id', 'map_type'],
                           condition=Q(sort_weight__isnull=False, id=F('versioned_object_id'), retired=False)
+                      ),
+                      models.Index(
+                          name='mappings_latest',
+                          fields=['versioned_object_id', '-created_at'],
+                          condition=(Q(is_active=True, is_latest_version=True) & ~Q(id=F('versioned_object_id')))
+                      ),
+                      models.Index(
+                          name='direct_mappings',
+                          fields=['from_concept', 'parent_id'],
+                          condition=(Q(id=F('versioned_object_id')))
                       ),
                   ] + VersionedModel.Meta.indexes
     parent = models.ForeignKey('sources.Source', related_name='mappings_set', on_delete=models.CASCADE)
@@ -506,6 +516,8 @@ class Mapping(MappingValidationMixin, SourceChildMixin, VersionedModel):
             mapping.public_access = parent.public_access
             mapping.save()
             initial_version = cls.create_initial_version(mapping)
+            if initial_version.id and not mapping._index:
+                mapping.latest_version_id = initial_version.id
             initial_version.sources.set([parent])
             mapping.sources.set([parent])
             mapping.set_checksums()
@@ -568,6 +580,8 @@ class Mapping(MappingValidationMixin, SourceChildMixin, VersionedModel):
                     obj.save()
                     obj.update_versioned_object()
                     if prev_latest_version:
+                        if not obj._index:  # pylint: disable=protected-access
+                            obj.prev_latest_version_id = prev_latest_version.id
                         prev_latest_version.is_latest_version = False
                         prev_latest_version._index = obj._index  # pylint: disable=protected-access
                         prev_latest_version.save(update_fields=['is_latest_version', '_index'])

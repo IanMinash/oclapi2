@@ -77,7 +77,7 @@ class BaseAPIView(generics.GenericAPIView, PathWalkerMixin):
         return self.has_owner_scope() and self.has_concept_container_scope()
 
     def _should_exclude_retired_from_search_results(self):
-        if self.is_owner_document_model() or 'expansion' in self.kwargs:
+        if self.is_owner_document_model() or 'expansion' in self.kwargs or self.is_url_registry_document():
             return False
 
         params = get(self, 'params') or self.request.query_params.dict()
@@ -88,7 +88,8 @@ class BaseAPIView(generics.GenericAPIView, PathWalkerMixin):
         return self.request.query_params.get(INCLUDE_INACTIVE) in TRUTHY
 
     def _should_include_private(self):
-        return self.is_user_document() or self.request.user.is_staff or self.is_user_scope()
+        return (self.is_user_document() or self.request.user.is_staff or
+                self.is_user_scope() or self.is_url_registry_document())
 
     def is_verbose(self):
         return self.request.query_params.get(VERBOSE_PARAM, False) in TRUTHY
@@ -430,6 +431,8 @@ class BaseAPIView(generics.GenericAPIView, PathWalkerMixin):
             facets.pop('collection_version', None)
             facets.pop('expansion', None)
             facets.pop('collection_owner_url', None)
+        facets.pop('is_in_latest_source_version', None)
+        facets.pop('is_latest_version', None)
         return facets
 
     def get_extras_searchable_fields_from_query_params(self):
@@ -465,6 +468,10 @@ class BaseAPIView(generics.GenericAPIView, PathWalkerMixin):
     def is_user_document(self):
         from core.users.documents import UserProfileDocument
         return self.document_model == UserProfileDocument
+
+    def is_url_registry_document(self):
+        from core.url_registry.documents import URLRegistryDocument
+        return self.document_model == URLRegistryDocument
 
     def is_concept_document(self):
         from core.concepts.documents import ConceptDocument
@@ -685,6 +692,8 @@ class BaseAPIView(generics.GenericAPIView, PathWalkerMixin):
         is_authenticated = user.is_authenticated
         username = user.username
 
+        is_members_view = self.get_view_name() in ['Organization Collection List', 'Organization Source List',
+                                                   'Organization Repo List', 'Organization Url Registry List']
         if self.is_owner_document_model():
             kwargs_filters = self.kwargs.copy()
             if self.user_is_self and is_authenticated:
@@ -692,15 +701,29 @@ class BaseAPIView(generics.GenericAPIView, PathWalkerMixin):
                 kwargs_filters['user'] = username
         else:
             kwargs_filters = self.get_kwargs_filters()
-            if self.get_view_name() in [
-                'Organization Collection List', 'Organization Source List', 'Organization Repo List'
-            ]:
+            if is_members_view:
                 kwargs_filters['ownerType'] = 'Organization'
                 kwargs_filters['owner'] = list(
                     user.organizations.values_list('mnemonic', flat=True)) or ['UNKNOWN-ORG-DUMMY']
             elif self.user_is_self and is_authenticated:
                 kwargs_filters['ownerType'] = 'User'
                 kwargs_filters['owner'] = username
+
+        if self.is_url_registry_document() and not is_members_view:
+            kwargs_filters = self.kwargs.copy()
+            if self.user_is_self and is_authenticated:
+                kwargs_filters.pop('user_is_self', None)
+                kwargs_filters['ownerType'] = 'User'
+                kwargs_filters['owner'] = username
+            elif not kwargs_filters:
+                kwargs_filters['ownerUrl'] = '/'
+            else:
+                if 'org' in kwargs_filters:
+                    kwargs_filters['ownerType'] = 'Organization'
+                    kwargs_filters['owner'] = kwargs_filters.pop('org')
+                elif 'user' in kwargs_filters:
+                    kwargs_filters['ownerType'] = 'User'
+                    kwargs_filters['owner'] = kwargs_filters.pop('user')
 
         for key, value in kwargs_filters.items():
             attr = to_snake_case(key)

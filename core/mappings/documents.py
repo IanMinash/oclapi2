@@ -1,6 +1,5 @@
 from django_elasticsearch_dsl import Document, fields
 from django_elasticsearch_dsl.registries import registry
-from elasticsearch_dsl import MetaField
 from pydash import get
 
 from core.common.utils import jsonify_safe, flatten_dict
@@ -18,9 +17,6 @@ class MappingDocument(Document):
         fields = [
             'external_id'
         ]
-
-    class Meta:
-        dynamic = MetaField('strict')
 
     last_update = fields.DateField(attr='updated_at')
     updated_by = fields.KeywordField(attr='updated_by.username')

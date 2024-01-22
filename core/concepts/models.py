@@ -10,7 +10,6 @@ from core.common.checksums import ChecksumModel
 from core.common.constants import ISO_639_1, LATEST, HEAD, ALL
 from core.common.mixins import SourceChildMixin
 from core.common.models import VersionedModel, ConceptContainerModel
-from core.common.services import PostgresQL
 from core.common.tasks import process_hierarchy_for_new_concept, process_hierarchy_for_concept_version, \
     process_hierarchy_for_new_parent_concept_version, update_mappings_concept
 from core.common.utils import generate_temp_version, drop_version, \
@@ -20,6 +19,7 @@ from core.concepts.constants import CONCEPT_TYPE, LOCALES_FULLY_SPECIFIED, LOCAL
     PERSIST_CLONE_ERROR, PERSIST_CLONE_SPECIFY_USER_ERROR, ALREADY_EXISTS, CONCEPT_REGEX, MAX_LOCALES_LIMIT, \
     MAX_NAMES_LIMIT, MAX_DESCRIPTIONS_LIMIT
 from core.concepts.mixins import ConceptValidationMixin
+from core.services.storages.postgres import PostgresQL
 
 
 class AbstractLocalizedText(ChecksumModel):
@@ -141,6 +141,11 @@ class ConceptName(AbstractLocalizedText):
                       models.Index(fields=['locale']),
                       models.Index(fields=['created_at']),
                       models.Index(fields=['type']),
+                      models.Index(
+                          name='preferred_locale',
+                          fields=['concept', 'locale_preferred', 'locale', '-created_at'],
+                          condition=Q(locale_preferred=True)
+                      ),
                   ]
 
     @property
@@ -191,6 +196,11 @@ class Concept(ConceptValidationMixin, SourceChildMixin, VersionedModel):  # pyli
                                    condition=(Q(is_active=True) & Q(retired=False) & Q(id=F('versioned_object_id')))),
                       models.Index(name='concepts_parent_active', fields=['parent_id', 'id', 'retired'],
                                    condition=(Q(retired=False, id=F('versioned_object_id')))),
+                      models.Index(
+                          name='concepts_latest',
+                          fields=['versioned_object_id', '-created_at'],
+                          condition=(Q(is_active=True, is_latest_version=True) & ~Q(id=F('versioned_object_id')))
+                      ),
                       models.Index(fields=['uri']),
                       models.Index(fields=['version']),
                   ] + VersionedModel.Meta.indexes
@@ -739,6 +749,8 @@ class Concept(ConceptValidationMixin, SourceChildMixin, VersionedModel):  # pyli
             if create_initial_version:
                 initial_version = cls.create_initial_version(concept)
                 if initial_version.id:
+                    if not concept._index:
+                        concept.latest_version_id = initial_version.id
                     initial_version.set_locales(names, ConceptName)
                     initial_version.set_locales(descriptions, ConceptDescription)
                     initial_version.sources.set([parent])
@@ -821,6 +833,8 @@ class Concept(ConceptValidationMixin, SourceChildMixin, VersionedModel):  # pyli
                     obj.clean()  # clean here to validate locales that can only be saved after obj is saved
                     obj.update_versioned_object()
                     if prev_latest_version:
+                        if not obj._index:  # pylint: disable=protected-access
+                            obj.prev_latest_version_id = prev_latest_version.id
                         prev_latest_version._index = obj._index  # pylint: disable=protected-access
                         prev_latest_version.is_latest_version = False
                         prev_latest_version.save(update_fields=['is_latest_version', '_index'])

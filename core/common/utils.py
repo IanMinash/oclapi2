@@ -6,6 +6,7 @@ import os
 import random
 import shutil
 import tempfile
+import time
 import uuid
 import zipfile
 from collections import OrderedDict
@@ -194,7 +195,7 @@ def get_class(kls):
 
 
 def write_export_file(
-        version, resource_type, resource_serializer_type, logger
+        version, resource_type, resource_serializer_type, logger, start_time
 ):  # pylint: disable=too-many-statements,too-many-locals,too-many-branches
     from core.concepts.models import Concept
     from core.mappings.models import Mapping
@@ -326,7 +327,8 @@ def write_export_file(
         logger.info(f'{resource_name} has no mappings to serialize.')
 
     with open('export.json', 'a') as out:
-        out.write(']}')
+        end_time = str(round((time.time() - start_time) + 2, 2)) + 'secs'
+        out.write('], "export_time": ' + json.dumps(end_time, cls=encoders.JSONEncoder) + '}')
 
     with zipfile.ZipFile('export.zip', 'w', zipfile.ZIP_DEFLATED) as _zip:
         _zip.write('export.json')
@@ -414,18 +416,22 @@ def es_get(url, **kwargs):
     :param url:
     :return:
     """
+    auth = None
+    if settings.ES_USER and settings.ES_PASSWORD:
+        auth = HTTPBasicAuth(settings.ES_USER, settings.ES_PASSWORD)
+
     if settings.ES_HOSTS:
         for es_host in settings.ES_HOSTS.split(','):
             try:
                 return requests.get(
-                    f'{settings.ES_SCHEME}://{es_host}/{url}',
+                    f'{settings.ES_SCHEME}://{es_host}/{url}', auth=auth,
                     **kwargs
                 )
             except ConnectTimeout:
                 continue
     else:
         return requests.get(
-            f'{settings.ES_SCHEME}://{settings.ES_HOST}:{settings.ES_PORT}/{url}',
+            f'{settings.ES_SCHEME}://{settings.ES_HOST}:{settings.ES_PORT}/{url}', auth=auth,
             **kwargs
         )
 
@@ -859,7 +865,7 @@ def get_export_service():
     parts = EXPORT_SERVICE.split('.')
     klass = parts[-1]
     mod = __import__('.'.join(parts[0:-1]), fromlist=[klass])
-    return getattr(mod, klass)
+    return getattr(mod, klass)()
 
 
 def get_start_of_month(date=timezone.now().date()):

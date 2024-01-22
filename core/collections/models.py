@@ -80,6 +80,16 @@ class Collection(ConceptContainerModel):
                       models.Index(fields=['uri']),
                       models.Index(name="coll_mnemonic_like", fields=["mnemonic"], opclasses=["text_pattern_ops"]),
                       models.Index(fields=['public_access']),
+                      models.Index(
+                          name='coll_org_released',
+                          fields=['mnemonic', 'organization', '-created_at'],
+                          condition=(models.Q(user__isnull=True, is_active=True, released=True))
+                      ),
+                      models.Index(
+                          name='coll_user_released',
+                          fields=['mnemonic', 'user', '-created_at'],
+                          condition=(models.Q(organization__isnull=True, is_active=True, released=True))
+                      ),
                   ] + ConceptContainerModel.Meta.indexes
 
     collection_type = models.TextField(blank=True)
@@ -216,12 +226,14 @@ class Collection(ConceptContainerModel):
             # making sure names in the submitted concept meet the same rule
             name_key = name.locale + name.name
             if name_key in matching_names_in_concept:
+                print("***NAME_KEY that dint match**", name_key)
                 raise ValidationError(validation_error)
 
             matching_names_in_concept[name_key] = True
-            if other_concepts_in_collection.filter(
-                    names__name=name.name, names__locale=name.locale, **{f"names__{attribute}": value}
-            ).exists():
+            other = other_concepts_in_collection.filter(
+                names__name=name.name, names__locale=name.locale, **{f"names__{attribute}": value})
+            if other.exists():
+                print(f"***Conflicting Name {name_key} of Expansion**", list(other.values_list('uri', flat=True)))
                 raise ValidationError(validation_error)
 
     @transaction.atomic

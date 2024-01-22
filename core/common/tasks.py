@@ -1,4 +1,5 @@
 import json
+import time
 from datetime import datetime
 from json import JSONDecodeError
 
@@ -116,6 +117,7 @@ def delete_collection(collection_id):
 
 @app.task(base=QueueOnce, bind=True)
 def export_source(self, version_id):
+    start_time = time.time()
     from core.sources.models import Source
 
     logger.info("Finding source version...")
@@ -132,20 +134,21 @@ def export_source(self, version_id):
 
     version.add_processing(self.request.id)
     try:
-        logger.info("Found source version %s.  Beginning export...", version.version)
+        logger.info('Found source version %s.  Beginning export...', version.version)
         write_export_file(
             version,
-            "source",
-            "core.sources.serializers.SourceVersionExportSerializer",
+            'source', 'core.sources.serializers.SourceVersionExportSerializer',
             logger,
+            start_time
         )
-        logger.info("Export complete!")
+        logger.info('Export complete!')
     finally:
         version.remove_processing(self.request.id)
 
 
 @app.task(base=QueueOnce, bind=True)
 def export_collection(self, version_id):
+    start_time = time.time()
     from core.collections.models import Collection
 
     logger.info("Finding collection version...")
@@ -172,9 +175,9 @@ def export_collection(self, version_id):
         )
         write_export_file(
             version,
-            "collection",
-            "core.collections.serializers.CollectionVersionExportSerializer",
+            'collection', 'core.collections.serializers.CollectionVersionExportSerializer',
             logger,
+            start_time
         )
         logger.info("Export complete!")
     finally:
@@ -793,8 +796,7 @@ def delete_s3_objects(path):
 
 @app.task(ignore_result=True)
 def beat_healthcheck():  # pragma: no cover
-    from core.common.services import RedisService
-
+    from core.services.storages.redis import RedisService
     redis_service = RedisService()
     redis_service.set(settings.CELERYBEAT_HEALTHCHECK_KEY, str(datetime.now()), ex=120)
 

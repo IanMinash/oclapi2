@@ -10,10 +10,10 @@ from pydash import get
 
 from core.common.constants import HEAD
 from core.common.models import ConceptContainerModel
-from core.common.services import PostgresQL
 from core.common.tasks import update_mappings_source, index_source_concepts, index_source_mappings
 from core.common.validators import validate_non_negative
 from core.concepts.models import ConceptName, Concept
+from core.services.storages.postgres import PostgresQL
 from core.sources.constants import SOURCE_TYPE, SOURCE_VERSION_TYPE, HIERARCHY_ROOT_MUST_BELONG_TO_SAME_SOURCE, \
     HIERARCHY_MEANINGS, AUTO_ID_CHOICES, AUTO_ID_SEQUENTIAL, AUTO_ID_UUID, LOCALE_EXTERNAL_AUTO_ID_CHOICES
 
@@ -58,8 +58,17 @@ class Source(DirtyFieldsMixin, ConceptContainerModel):
             )
         ]
         indexes = [
-                      models.Index(fields=['uri']),
-                      models.Index(fields=['public_access'])
+                      models.Index(fields=['uri']), models.Index(fields=['public_access']),
+                      models.Index(
+                          name='source_org_released',
+                          fields=['mnemonic', 'organization', '-created_at'],
+                          condition=(models.Q(user__isnull=True, is_active=True, released=True))
+                      ),
+                      models.Index(
+                          name='source_user_released',
+                          fields=['mnemonic', 'user', '-created_at'],
+                          condition=(models.Q(organization__isnull=True, is_active=True, released=True))
+                      ),
                   ] + ConceptContainerModel.Meta.indexes
         # + index on UPPER(mnemonic) in custom migration 0022
 
@@ -727,13 +736,18 @@ class Source(DirtyFieldsMixin, ConceptContainerModel):
         if self.is_head:
             return self.concepts_set.filter(id=F('versioned_object_id'))
 
-        return self.concepts.filter()
+        return Concept.objects.filter(
+            id__in=Concept.sources.through.objects.filter(source_id=self.id).values_list('concept_id', flat=True)
+        )
 
     def get_mappings_queryset(self):
         if self.is_head:
             return self.mappings_set.filter(id=F('versioned_object_id'))
 
-        return self.mappings.filter()
+        from core.mappings.models import Mapping
+        return Mapping.objects.filter(
+            id__in=Mapping.sources.through.objects.filter(source_id=self.id).values_list('mapping_id', flat=True)
+        )
 
     @property
     def mappings_distribution(self):
@@ -761,3 +775,15 @@ class Source(DirtyFieldsMixin, ConceptContainerModel):
             _filters['source_version'] = self.version
 
         return {**_filters, **(filters or {})}
+
+    @staticmethod
+    def compare(version1, version2, verbose=False):  # pragma: no cover
+        from core.common.checksums import ChecksumDiff
+        diff = ChecksumDiff(
+            resources1=version1.get_concepts_queryset().only('mnemonic', 'checksums'),
+            resources2=version2.get_concepts_queryset().only('mnemonic', 'checksums'),
+            verbose=verbose
+        )
+        diff.process()
+        diff.print()
+        return diff.result
