@@ -121,7 +121,8 @@ class MinioExportService(CloudStorageServiceInterface):
 
         return None
 
-    def _conn():
+    @staticmethod
+    def _conn(cls):
         return MinioExportService._session()
 
     def __get_connection(self):
